@@ -221,6 +221,12 @@ else:
                     "LlamaTokenizerFast" if is_tokenizers_available() else None,
                 ),
             ),
+            (
+                "olmo",
+                (
+                    "LlamaTokenizer" if is_sentencepiece_available() else None,
+                    "OLMoTokenizerFast" if is_tokenizers_available() else None,
+                ),
             ("llava", ("LlamaTokenizer", "LlamaTokenizerFast" if is_tokenizers_available() else None)),
             ("longformer", ("LongformerTokenizer", "LongformerTokenizerFast" if is_tokenizers_available() else None)),
             (

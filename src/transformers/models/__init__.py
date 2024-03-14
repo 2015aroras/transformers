@@ -122,6 +122,7 @@ from . import (
     levit,
     lilt,
     llama,
+    olmo,
     llava,
     longformer,
     longt5,
