@@ -1199,21 +1199,50 @@ class OLMoBlock(nn.Module):
         attn_mask: Optional[torch.Tensor] = None,
         dropout_p: float = 0.0,
         is_causal: bool = False,
-    ) -> torch.Tensor:
+        use_pytorch_sdpa: bool = True,
+        output_attentions: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Computes scaled dot product attention on query, key and value tensors, using an optional
         attention mask if passed, and applying dropout if a probability greater than 0.0 is specified.
 
         This method is based on PyTorch's `scaled_dot_product_attention`.
         """
-        return F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=attn_mask,
-            dropout_p=dropout_p,
-            is_causal=is_causal,
-        )
+        if use_pytorch_sdpa and output_attentions:
+            # TODO
+            logger.warning_once(
+                "OLMoModel is using SDPA, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to the manual attention implementation, "
+                'but specifying the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be removed using the argument `use_pytorch_sdpa=False` in `OLMoConfig`.'
+            )
+            use_pytorch_sdpa = False
+
+        if use_pytorch_sdpa:
+            return F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+            ), None
+
+        attn_weights = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.size(-1))
+
+        if is_causal:
+            assert attn_mask is None
+
+            query_len, key_len = q.shape[-2], k.shape[-2]  # could be different if layer_past not None
+            attn_bias = get_causal_attention_bias(self.__cache, key_len, q.device)[:, :, :query_len, :key_len]
+        elif attn_mask is not None:
+            attn_bias = attn_mask.to(q.dtype)
+        else:
+            attn_bias = torch.zeros_like(attn_weights)
+
+        attn_weights += attn_bias
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1).to(q.dtype)
+        attn_weights = nn.functional.dropout(attn_weights, p=dropout_p)
+        return torch.matmul(attn_weights, v), attn_weights if output_attentions else None
+
 
     def attention(
         self,
@@ -1223,7 +1252,9 @@ class OLMoBlock(nn.Module):
         attention_bias: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        use_pytorch_sdpa: bool = True,
+        output_attentions: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
         B, T, C = q.size()  # batch size, sequence length, d_model
         dtype = k.dtype
 
@@ -1268,20 +1299,22 @@ class OLMoBlock(nn.Module):
 
         # Get the attention scores.
         # shape: (B, nh, T, hs)
-        att = self._scaled_dot_product_attention(
+        att, attn_weights = self._scaled_dot_product_attention(
             q,
             k,
             v,
             attn_mask=attention_bias,
             dropout_p=0.0 if not self.training else self.config.attention_dropout,
             is_causal=attention_bias is None,
+            use_pytorch_sdpa=use_pytorch_sdpa,
+            output_attentions=output_attentions,
         )
 
         # Re-assemble all head outputs side-by-side.
         att = att.transpose(1, 2).contiguous().view(B, T, C)
 
         # Apply output projection.
-        return self.attn_out(att), present
+        return self.attn_out(att), present, attn_weights
 
     @abstractmethod
     def forward(
@@ -1290,7 +1323,9 @@ class OLMoBlock(nn.Module):
         attention_bias: Optional[torch.FloatTensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        use_pytorch_sdpa: bool = True,
+        output_attentions: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
         raise NotImplementedError
 
     @classmethod
@@ -1345,7 +1380,9 @@ class OLMoSequentialBlock(OLMoBlock):
         attention_bias: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        use_pytorch_sdpa: bool = True,
+        output_attentions: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
         # Get query, key, value projections.
         # shape:
         #  - for regular attn q, k, v: (batch_size, seq_len, d_model)
@@ -1363,11 +1400,11 @@ class OLMoSequentialBlock(OLMoBlock):
 
         # Get attention scores.
         if self._activation_checkpoint_fn is not None:
-            att, cache = self._activation_checkpoint_fn(  # type: ignore
-                self.attention, q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache
+            att, cache, attn_weights = self._activation_checkpoint_fn(  # type: ignore
+                self.attention, q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache, use_pytorch_sdpa=use_pytorch_sdpa, output_attentions=output_attentions
             )
         else:
-            att, cache = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache)
+            att, cache, attn_weights = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache, use_pytorch_sdpa=use_pytorch_sdpa, output_attentions=output_attentions)
 
         # Add attention scores.
         # shape: (B, T, C)
@@ -1389,7 +1426,7 @@ class OLMoSequentialBlock(OLMoBlock):
         x = self.dropout(x)
         x = og_x + x
 
-        return x, cache
+        return x, cache, attn_weights
 
 
 class OLMoParallelBlock(OLMoBlock):
@@ -1441,7 +1478,9 @@ class OLMoParallelBlock(OLMoBlock):
         attention_bias: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        use_pytorch_sdpa: bool = True,
+        output_attentions: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
         # Get query, key, value, and feed-forward projections.
         # shape of q, k, v:
         #  - for regular attn q, k, v: (batch_size, seq_len, d_model)
@@ -1463,11 +1502,11 @@ class OLMoParallelBlock(OLMoBlock):
         # Get attention scores.
         # shape: (B, T, C)
         if self._activation_checkpoint_fn is not None:
-            att, cache = self._activation_checkpoint_fn(  # type: ignore
-                self.attention, q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache
+            att, cache, attn_weights = self._activation_checkpoint_fn(  # type: ignore
+                self.attention, q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache, use_pytorch_sdpa=use_pytorch_sdpa, output_attentions=output_attentions
             )
         else:
-            att, cache = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache)
+            att, cache, attn_weights = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache, use_pytorch_sdpa=use_pytorch_sdpa, output_attentions=output_attentions)
 
         # Apply output projections (and activation function) and sum the results.
         # We keep these projections separate because we found that we got better throughput this
@@ -1476,11 +1515,13 @@ class OLMoParallelBlock(OLMoBlock):
             return (
                 x + self.dropout(self.ff_out(self._activation_checkpoint_fn(self.act, ff))) + self.dropout(att),
                 cache,
+                attn_weights,
             )
         else:
             return (
                 x + self.dropout(self.ff_out(self.act(ff))) + self.dropout(att),
                 cache,
+                attn_weights,
             )
 
 
@@ -1561,39 +1602,15 @@ class OLMoLlamaBlock(OLMoBlock):
         init_weights(self.config, self.v_proj, d=self.config.d_model, layer_id=None)
         init_weights(self.config, self.ff_proj, d=self.config.d_model, layer_id=None)
 
-    def _scaled_dot_product_attention(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,
-        dropout_p: float = 0.0,
-        is_causal: bool = False,
-    ) -> torch.Tensor:
-        attn_weights = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.size(-1))
-
-        if is_causal:
-            assert attn_mask is None
-
-            query_len, key_len = q.shape[-2], k.shape[-2]  # could be different if layer_past not None
-            attn_bias = get_causal_attention_bias(self.__cache, key_len, q.device)[:, :, :query_len, :key_len]
-        elif attn_mask is not None:
-            attn_bias = attn_mask.to(q.dtype)
-        else:
-            attn_bias = torch.zeros_like(attn_weights)
-
-        attn_weights += attn_bias
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1).to(q.dtype)
-        attn_weights = nn.functional.dropout(attn_weights, p=dropout_p)
-        return torch.matmul(attn_weights, v)
-
     def forward(
         self,
         x: torch.Tensor,
         attention_bias: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        use_pytorch_sdpa: bool = True,
+        output_attentions: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor]]:
         # Get query, key, value projections.
         # shape:
         #  - for regular attn q, k, v: (batch_size, seq_len, d_model)
@@ -1610,7 +1627,7 @@ class OLMoLlamaBlock(OLMoBlock):
             v.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
 
         # Get attention scores.
-        att, cache = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache)
+        att, cache, attn_weights = self.attention(q, k, v, attention_bias, layer_past=layer_past, use_cache=use_cache, use_pytorch_sdpa=use_pytorch_sdpa, output_attentions=output_attentions)
 
         # Add attention scores.
         # shape: (B, T, C)
@@ -1632,7 +1649,7 @@ class OLMoLlamaBlock(OLMoBlock):
         x = self.dropout(x)
         x = og_x + x
 
-        return x, cache
+        return x, cache, attn_weights
 
 
 # Copied from transformers.models.llama.modeling_llama.LlamaDecoderLayer with LLAMA->OLMO,Llama->OLMo
@@ -1733,7 +1750,7 @@ OLMO_START_DOCSTRING = r"""
     OLMO_START_DOCSTRING,
 )
 # Copied from transformers.models.llama.modeling_llama.LlamaPreTrainedModel with Llama->OLMo
-class OLMoPreTrainedModel(PreTrainedModel):
+class OLMoPreTrainedModelOld(PreTrainedModel):
     config_class = OLMoConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
@@ -1796,8 +1813,11 @@ class OLMoBlockGroup(nn.ModuleList):
         attention_bias: Optional[torch.FloatTensor] = None,
         layers_past: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
         use_cache: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor, torch.Tensor]]]]:
+        use_pytorch_sdpa: bool = True,
+        output_attentions: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor, torch.Tensor]]], Optional[List[torch.Tensor]]]:
         attn_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = [] if use_cache else None
+        attn_weights: Optional[List[torch.Tensor]] = [] if output_attentions else None
         for block_idx, block in enumerate(self):
             layer_past = None if layers_past is None else layers_past[block_idx]
             block_idx += self.layer_offset
@@ -1817,16 +1837,19 @@ class OLMoBlockGroup(nn.ModuleList):
                 )
             ):
                 # shape: (batch_size, seq_len, d_model)
-                x, cache = self._activation_checkpoint_fn(  # type: ignore
-                    block, x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache
+                x, cache, layer_attn_weights = self._activation_checkpoint_fn(  # type: ignore
+                    block, x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache, use_pytorch_sdpa=use_pytorch_sdpa, output_attentions=output_attentions,
                 )
             else:
                 # shape: (batch_size, seq_len, d_model)
-                x, cache = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache)
+                x, cache, layer_attn_weights = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache, use_pytorch_sdpa=use_pytorch_sdpa, output_attentions=output_attentions)
             if attn_key_values is not None:
                 assert cache is not None
                 attn_key_values.append(cache)
-        return x, attn_key_values
+            if attn_weights is not None:
+                assert layer_attn_weights is not None
+                attn_weights.append(layer_attn_weights)
+        return x, attn_key_values, attn_weights
 
     def reset_parameters(self):
         for block in self:
@@ -1838,10 +1861,22 @@ class OLMoBlockGroup(nn.ModuleList):
             block.set_activation_checkpointing(strategy)
 
 
-class OLMo(nn.Module):
+class OLMoPreTrainedModel(PreTrainedModel):
+    config_class = OLMoConfig
+    base_model_prefix = "model"
+    # _no_split_modules = ["OLMoDecoderLayer"]
+    # _skip_keys_device_placement = ["past_key_values", "causal_mask"]
+    _skip_keys_device_placement = ["past_key_values"]
+
+    def _init_weights(self, module):
+        # `OLMoModel.reset_parameters` initializes weights of itself and its children
+        if isinstance(module, OLMoModel):
+            module.reset_parameters()
+
+
+class OLMoModel(PreTrainedModel):
     def __init__(self, config: OLMoConfig, init_params: bool = True):
-        super().__init__()
-        self.config = config
+        super().__init__(config)
         self.__cache = BufferCache()
 
         # Validate config.
@@ -1918,6 +1953,14 @@ class OLMo(nn.Module):
             get_causal_attention_bias(self.__cache, config.max_sequence_length, _non_meta_init_device(config))
             self.get_alibi_attention_bias(config.max_sequence_length, _non_meta_init_device(config))
 
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.transformer.wte
+
+    def set_input_embeddings(self, value):
+        self.transformer.wte = value
+
     def set_activation_checkpointing(self, strategy: Optional[ActivationCheckpointingStrategy]):
         self.activation_checkpointing_strategy = strategy
         if self.config.block_group_size != 1:
@@ -1936,7 +1979,7 @@ class OLMo(nn.Module):
             return device
 
     def reset_parameters(self):
-        log.info("Initializing model parameters...")
+        logger.info("Initializing model parameters...")
         # Top-level embeddings / linear layers.
         init_weights(
             self.config,
@@ -1975,14 +2018,16 @@ class OLMo(nn.Module):
 
     def forward(
         self,
-        input_ids: torch.LongTensor,
+        input_ids: Optional[torch.LongTensor] = None,
         input_embeddings: Optional[torch.FloatTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         attention_bias: Optional[torch.Tensor] = None,
         past_key_values: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
         use_cache: bool = False,
+        output_attentions: bool = False,
         last_logits_only: bool = False,
         output_hidden_states: Optional[bool] = None,
+        return_dict: bool = True,
     ) -> OLMoOutput:
         """
         :param input_ids: A tensor of shape `(batch_size, seq_len)`.
@@ -2014,6 +2059,9 @@ class OLMo(nn.Module):
         :param last_logits_only: If `True`, only compute the logits for the last token of each sequence.
             This can speed up decoding when you only care about the next token.
         """
+        if input_ids is None and input_embeddings is None:
+            raise ValueError("Input ids or embeddings must be given to OLMo model")
+
         output_hidden_states = output_hidden_states if output_hidden_states is not None else False
 
         if past_key_values:
@@ -2084,6 +2132,7 @@ class OLMo(nn.Module):
                 ensure_finite_(attention_bias, check_neg_inf=True, check_pos_inf=False)
 
         attn_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = [] if use_cache else None
+        attn_weights: Optional[List[torch.Tensor]] = [] if output_attentions else None
 
         # decoder layers
         all_hidden_states = []
@@ -2112,15 +2161,18 @@ class OLMo(nn.Module):
                     )
                 ):
                     # shape: (batch_size, seq_len, d_model)
-                    x, cache = self._activation_checkpoint_fn(
-                        block, x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache
+                    x, cache, block_attn_weights = self._activation_checkpoint_fn(
+                        block, x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache, use_pytorch_sdpa=self.config.use_pytorch_sdpa, output_attentions=output_attentions,
                     )
                 else:
                     # shape: (batch_size, seq_len, d_model)
-                    x, cache = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache)
+                    x, cache, block_attn_weights = block(x, attention_bias=attention_bias, layer_past=layer_past, use_cache=use_cache, use_pytorch_sdpa=self.config.use_pytorch_sdpa, output_attentions=output_attentions)
                 if attn_key_values is not None:
                     assert cache is not None
                     attn_key_values.append(cache)
+                if attn_weights is not None:
+                    assert block_attn_weights is not None
+                    attn_weights.append(block_attn_weights)
         else:
             for group_idx, block_group in enumerate(self.transformer.block_groups):
                 if output_hidden_states:
@@ -2134,10 +2186,13 @@ class OLMo(nn.Module):
                         group_idx * self.config.block_group_size : (group_idx + 1) * self.config.block_group_size
                     ]
                 )
-                x, cache = block_group(x, attention_bias=attention_bias, layers_past=layers_past, use_cache=use_cache)
+                x, cache, block_attn_weights = block_group(x, attention_bias=attention_bias, layers_past=layers_past, use_cache=use_cache, use_pytorch_sdpa=self.config.use_pytorch_sdpa, output_attentions=output_attentions)
                 if attn_key_values is not None:
                     assert cache is not None
                     attn_key_values.extend(cache)
+                if attn_weights is not None:
+                    assert block_attn_weights is not None
+                    attn_weights.append(block_attn_weights)
 
         if last_logits_only:
             # shape: (batch_size, 1, d_model)
@@ -2150,20 +2205,19 @@ class OLMo(nn.Module):
             # add final hidden state post-final-layernorm, following HuggingFace's convention
             all_hidden_states.append(x)
 
-        # Get logits.
-        # shape: (batch_size, seq_len or 1, vocab_size)
-        if self.config.weight_tying:
-            logits = F.linear(x, self.transformer.wte.weight, None)  # type: ignore
-        else:
-            logits = self.transformer.ff_out(x)  # type: ignore
-        if self.config.scale_logits:
-            logits.mul_(1 / math.sqrt(self.config.d_model))
+        if not return_dict:
+            return tuple(v for v in [
+                x, tuple(attn_key_values) if attn_key_values is not None else None,
+                tuple(all_hidden_states),
+                None
+            ] if v is not None)
 
-        return OLMoOutput(
-            logits=logits,
-            attn_key_values=attn_key_values,
-            hidden_states=tuple(all_hidden_states) if output_hidden_states else None,
-        )  # type: ignore[arg-type]
+        return BaseModelOutputWithPast(
+            last_hidden_state=x,
+            past_key_values=tuple(attn_key_values) if attn_key_values is not None else None,
+            hidden_states=tuple(all_hidden_states),
+            attentions=tuple(attn_weights) if attn_weights is not None else None,
+        )
 
     def get_fsdp_wrap_policy(self, wrap_strategy: Optional[FSDPWrapStrategy] = None):
         if wrap_strategy is None:
@@ -2369,7 +2423,7 @@ OLMO_INPUTS_DOCSTRING = r"""
     OLMO_START_DOCSTRING,
 )
 # Copied from transformers.models.llama.modeling_llama.LlamaModel with LLAMA->OLMO,Llama->OLMo
-class OLMoModel(OLMoPreTrainedModel):
+class OLMoModelOld(OLMoPreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`OLMoDecoderLayer`]
 
@@ -2573,8 +2627,153 @@ class OLMoModel(OLMoPreTrainedModel):
         return causal_mask
 
 
-# Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM with LLAMA->OLMO,Llama->OLMo,meta-llama/Llama-2-7b->allenai/OLMo
 class OLMoForCausalLM(OLMoPreTrainedModel):
+    def __init__(self, config: OLMoConfig):
+        super().__init__(config)
+        self.model = OLMoModel(config)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self) -> torch.nn.Module:
+        return self.model.transformer.wte
+
+    def set_input_embeddings(self, value: torch.nn.Module):
+        self.model.transformer.wte = value
+
+    def get_output_embeddings(self):
+        if self.config.weight_tying:
+            return self.model.transformer.wte
+        else:
+            return self.model.transformer.ff_out
+
+    def set_output_embeddings(self, value: torch.nn.Module):
+        if self.config.weight_tying:
+            self.model.transformer.wte = value
+        else:
+            self.model.transformer.ff_out = value
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
+
+    @add_start_docstrings_to_model_forward(OLMO_INPUTS_DOCSTRING)
+    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        attention_bias: Optional[torch.Tensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        r"""
+        Args:
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+        Returns:
+
+        Example:
+
+        ```python
+        >>> from transformers import AutoTokenizer, OLMoForCausalLM
+
+        >>> model = OLMoForCausalLM.from_pretrained("allenai/OLMo-hf")
+        >>> tokenizer = AutoTokenizer.from_pretrained("allenai/OLMo-hf")
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        ```"""
+        if use_cache is None:
+            use_cache = self.config.use_cache
+
+        if output_attentions:
+            raise ValueError("output_attentions is not yet supported in OLMo")
+
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        base_output: BaseModelOutputWithPast | Tuple = self.model.forward(
+            input_ids=input_ids,
+            input_embeddings=inputs_embeds,
+            attention_mask=attention_mask,
+            attention_bias=attention_bias,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            output_hidden_states=output_hidden_states,
+        )
+
+        last_hidden_state = base_output.last_hidden_state if return_dict else base_output[0]
+
+        # Get logits.
+        # shape: (batch_size, seq_len or 1, vocab_size)
+        if self.config.weight_tying:
+            logits = F.linear(last_hidden_state, self.model.transformer.wte.weight, None)  # type: ignore
+        else:
+            logits = self.model.transformer.ff_out(last_hidden_state)  # type: ignore
+        if self.config.scale_logits:
+            logits.mul_(1 / math.sqrt(self.config.d_model))
+
+        loss = None
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = torch.nn.CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.embedding_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
+
+        if not return_dict:
+            output = (logits,) + base_output[1:]
+            return (loss,) + output if loss is not None else output
+
+        assert isinstance(base_output, BaseModelOutputWithPast)
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=base_output.past_key_values,
+            hidden_states=base_output.hidden_states,
+            attentions=None,
+        )
+
+
+    def can_generate(self) -> bool:
+        return True
+
+    def prepare_inputs_for_generation(
+        self, input_ids: torch.LongTensor, past_key_values: Optional[List[Tuple]] = None, **kwargs
+    ):
+        if past_key_values:
+            # This is because we want the model to only process the last generated token.
+            input_ids = input_ids[:, -1:]
+        model_inputs = {"input_ids": input_ids, "past_key_values": past_key_values}
+
+        model_inputs.update(kwargs)
+        model_inputs["use_cache"] = kwargs.pop("use_cache", self.config.use_cache)
+        return model_inputs
+
+
+# Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM with LLAMA->OLMO,Llama->OLMo,meta-llama/Llama-2-7b->allenai/OLMo
+class OLMoForCausalLMOld(OLMoPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):

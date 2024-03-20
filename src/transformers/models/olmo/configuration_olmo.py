@@ -229,7 +229,10 @@ class OLMoConfig(PretrainedConfig):
             If ``True``, apply RoPE embeddings at full precision regardless of the input type. Otherwise,
             apply RoPE at the precision of the input.
         flash_attention (`bool`, *optional*, defaults to `True`):
-            If ``True``, use ``FlashAttention``.
+            If ``True``, use ``FlashAttention``. This is ignored if ``use_pytorch_sdpa`` is ``False``.
+        use_pytorch_sdpa (`bool`, *optional*, defaults to `True`):
+            If ``True``, use Pytorch's ``F.scaled_dot_product_attention`` instead of a manual
+            implementation for the same functionality.
         attention_dropout (`float`, *optional*, defaults to 0.0):
             The dropout probability within the attention modules.
         attention_layer_norm (`bool`, *optional*, defaults to `False`):
@@ -261,7 +264,7 @@ class OLMoConfig(PretrainedConfig):
             If ``True``, scale the output logits by ``1 / sqrt(d_model)``.
         weight_tying (`bool`, *optional*, defaults to `False`):
             Whether to tie output linear weights to the input embedding.
-        init_device (`Optional[str]`, *optional*, defaults to `meta`):
+        init_device (`Optional[str]`, *optional*, defaults to `cpu`):
             The torch device to use when initializing the model parameters, e.g. "cpu", "cuda:0", "meta".
         init_fn (`InitFnType`, *optional*, defaults to `InitFnType.mitchell`):
             The weight initialization strategy.
@@ -313,6 +316,7 @@ class OLMoConfig(PretrainedConfig):
         rope=True,
         rope_full_precision=False,
         flash_attention=True,
+        use_pytorch_sdpa=True,
         attention_dropout=0.0,
         attention_layer_norm=False,
         residual_dropout=0.0,
@@ -324,7 +328,7 @@ class OLMoConfig(PretrainedConfig):
         bias_for_layer_norm=False,
         scale_logits=False,
         weight_tying=False,
-        init_device="meta",
+        init_device="cpu",
         init_fn=InitFnType.mitchell,
         init_std=0.02,
         init_cutoff_factor=None,
@@ -350,6 +354,7 @@ class OLMoConfig(PretrainedConfig):
         self.rope = rope
         self.rope_full_precision = rope_full_precision
         self.flash_attention = flash_attention
+        self.use_pytorch_sdpa = use_pytorch_sdpa
         self.attention_dropout = attention_dropout
         self.attention_layer_norm = attention_layer_norm
         self.residual_dropout = residual_dropout
