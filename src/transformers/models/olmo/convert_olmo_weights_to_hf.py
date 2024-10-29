@@ -170,6 +170,8 @@ def write_model(
         bos_token_id=None,
         eos_token_id=olmo_config["eos_token_id"],
         tie_word_embeddings=olmo_config.get("weight_tying", True),
+        layer_norm_type=olmo_config.get("layer_norm_type", "default"),
+        rms_norm_eps=olmo_config.get("layer_norm_eps", 1e-5),
         rope_theta=base,
         clip_qkv=olmo_config.get("clip_qkv"),
     )
