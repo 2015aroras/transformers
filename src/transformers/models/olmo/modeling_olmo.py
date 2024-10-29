@@ -326,15 +326,15 @@ class OlmoAttention(nn.Module):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        if self.q_norm is not None:
-            query_states = self.q_norm(query_states)
-        if self.k_norm is not None:
-            key_states = self.k_norm(key_states)
-
         if self.config.clip_qkv is not None:
             query_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
             key_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
             value_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
+
+        if self.q_norm is not None:
+            query_states = self.q_norm(query_states)
+        if self.k_norm is not None:
+            key_states = self.k_norm(key_states)
 
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -419,6 +419,11 @@ class OlmoFlashAttention2(OlmoAttention):
             query_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
             key_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
             value_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
+
+        if self.q_norm is not None:
+            query_states = self.q_norm(query_states)
+        if self.k_norm is not None:
+            key_states = self.k_norm(key_states)
 
         # Flash attention requires the input to have the shape
         # batch_size x seq_length x head_dim x hidden_dim
@@ -534,6 +539,11 @@ class OlmoSdpaAttention(OlmoAttention):
             query_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
             key_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
             value_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
+
+        if self.q_norm is not None:
+            query_states = self.q_norm(query_states)
+        if self.k_norm is not None:
+            key_states = self.k_norm(key_states)
 
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
