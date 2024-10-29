@@ -64,6 +64,10 @@ class OlmoConfig(PretrainedConfig):
             The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
         layer_norm_type (`str`, *optional*, defaults to `"default"`):
             Type of layer norm to use.
+        use_q_norm (`bool`, *optional*, defaults to `False`):
+            Whether to apply norm to the queries within the attention mechanism.
+        use_k_norm (`bool`, *optional*, defaults to `False`):
+            Whether to apply norm to the keys within the attention mechanism.
         norm_after (`bool`, *optional*, defaults to `False`):
             Whether to apply norm after the attention/feedforward layers rather than before, as introduced
             in the Swin transformer paper (Liu et al).
@@ -126,6 +130,8 @@ class OlmoConfig(PretrainedConfig):
         max_position_embeddings=2048,
         initializer_range=0.02,
         layer_norm_type="default",
+        use_q_norm=False,
+        use_k_norm=False,
         norm_after=False,
         rms_norm_eps=1e-6,
         use_cache=True,
@@ -155,6 +161,8 @@ class OlmoConfig(PretrainedConfig):
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
         self.layer_norm_type = layer_norm_type
+        self.use_q_norm = use_q_norm
+        self.use_k_norm = use_k_norm
         self.norm_after = norm_after
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache

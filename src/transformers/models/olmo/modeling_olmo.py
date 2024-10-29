@@ -270,6 +270,16 @@ class OlmoAttention(nn.Module):
         self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
         self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
+        self.q_norm = (
+            get_layer_norm(config.layer_norm_type, self.num_heads * self.head_dim, config.rms_norm_eps)
+            if config.use_q_norm
+            else None
+        )
+        self.k_norm = (
+            get_layer_norm(config.layer_norm_type, self.num_key_value_heads * self.head_dim, config.rms_norm_eps)
+            if config.use_k_norm
+            else None
+        )
         self._init_rope()
 
     def _init_rope(self):
@@ -315,6 +325,11 @@ class OlmoAttention(nn.Module):
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
+
+        if self.q_norm is not None:
+            query_states = self.q_norm(query_states)
+        if self.k_norm is not None:
+            key_states = self.k_norm(key_states)
 
         if self.config.clip_qkv is not None:
             query_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
