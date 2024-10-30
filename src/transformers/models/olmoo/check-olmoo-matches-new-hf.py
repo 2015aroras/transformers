@@ -12,7 +12,7 @@ from transformers import OlmooConfig, OlmooForCausalLM
 def main(olmoo_directory: Path, hf_directory: Path, hf_revision: Optional[str]):
     hf_revision = hf_revision or "main"
 
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device("cpu")
 
     in_vec = torch.randint(0, 50000, (2048, 2), device=device)
 
