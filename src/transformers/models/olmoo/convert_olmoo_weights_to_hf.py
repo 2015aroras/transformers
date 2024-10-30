@@ -74,6 +74,11 @@ def write_model(
     config_path = Path(input_base_path) / "config.yaml"
     olmoo_config = yaml.safe_load(config_path.read_text())["model"]
 
+    if not olmoo_config.get("attention_layer_norm", False):
+        raise RuntimeError("OLMoo checkpoints must have attention layer norm")
+    if not olmoo_config.get("norm_after", False):
+        raise RuntimeError("OLMoo checkpoints must set norm_after to True")
+
     n_layers = olmoo_config["n_layers"]
     n_heads = olmoo_config["n_heads"]
     dim = olmoo_config["d_model"]
@@ -187,13 +192,8 @@ def write_model(
         bos_token_id=None,
         eos_token_id=olmoo_config["eos_token_id"],
         tie_word_embeddings=olmoo_config.get("weight_tying", True),
-        layer_norm_type=olmoo_config.get("layer_norm_type", "default"),
-        use_q_norm=olmoo_config.get("attention_layer_norm", False),
-        use_k_norm=olmoo_config.get("attention_layer_norm", False),
-        norm_after=olmoo_config.get("norm_after", False),
         rms_norm_eps=olmoo_config.get("layer_norm_eps", 1e-5),
         rope_theta=base,
-        clip_qkv=olmoo_config.get("clip_qkv"),
     )
     config.save_pretrained(tmp_model_path)
 
