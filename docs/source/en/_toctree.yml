@@ -516,6 +516,8 @@
         title: OLMo
       - local: model_doc/olmoe
         title: OLMoE
+      - local: model_doc/olmoo
+        title: OLMoo
       - local: model_doc/open-llama
         title: Open-Llama
       - local: model_doc/opt
