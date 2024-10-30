@@ -275,6 +275,14 @@ class OlmooModelTester:
 class OlmooModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, unittest.TestCase):
     all_model_classes = (OlmooModel, OlmooForCausalLM) if is_torch_available() else ()
     all_generative_model_classes = (OlmooForCausalLM,) if is_torch_available() else ()
+    pipeline_model_mapping = (
+        {
+            "feature-extraction": OlmooModel,
+            "text-generation": OlmooForCausalLM,
+        }
+        if is_torch_available()
+        else {}
+    )
     test_pruning = False
     fx_compatible = False
 
