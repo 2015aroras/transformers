@@ -13,6 +13,7 @@ from ..olmo.modeling_olmo import (
     OlmoAttention,
     OlmoDecoderLayer,
     OlmoForCausalLM,
+    OlmoMLP,
     OlmoModel,
     apply_rotary_pos_emb,
 )
@@ -234,12 +235,23 @@ class Olmo2Attention(OlmoAttention):
         return attn_output, attn_weights
 
 
+class Olmo2MLP(OlmoMLP):
+    def __init__(self, config: Olmo2Config):
+        super().__init__(config)
+        del self.up_proj
+
+    def forward(self, x):
+        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)))
+        return down_proj
+
+
 # The OLMo2 layers are identical to those of the OLMo model except:
 # - RMSNorm is used instead of standard layer norm.
 # - Norm is applied after attention/feedforward rather than before.
 class Olmo2DecoderLayer(OlmoDecoderLayer):
     def __init__(self, config: Olmo2Config, layer_idx: int):
         super().__init__(config, layer_idx=layer_idx)
+        self.mlp = Olmo2MLP(config)
         self.post_attention_layernorm = Olmo2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_feedforward_layernorm = Olmo2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.self_attn = Olmo2Attention(config=config, layer_idx=layer_idx)
