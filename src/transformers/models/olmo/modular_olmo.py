@@ -38,11 +38,15 @@ class OlmoLayerNorm(nn.Module):
 
 
 class OlmoMLP(LlamaMLP):
-    def __init__(self, config):
+    def __init__(self, config: OlmoConfig):
         super().__init__(config)
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        del self.up_proj
+
+    def forward(self, x):
+        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)))
+        return down_proj
 
 
 class OlmoAttention(LlamaAttention):

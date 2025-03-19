@@ -236,13 +236,7 @@ class Olmo2Attention(OlmoAttention):
 
 
 class Olmo2MLP(OlmoMLP):
-    def __init__(self, config: Olmo2Config):
-        super().__init__(config)
-        del self.up_proj
-
-    def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)))
-        return down_proj
+    pass
 
 
 # The OLMo2 layers are identical to those of the OLMo model except:
