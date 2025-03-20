@@ -175,23 +175,14 @@ class OlmoAttention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        **kwargs,
+        **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
-
-        if self.config.clip_qkv is not None:
-            query_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
-            key_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
-            value_states.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
-
-        query_states = query_states.view(hidden_shape).transpose(1, 2)
-        key_states = key_states.view(hidden_shape).transpose(1, 2)
-        value_states = value_states.view(hidden_shape).transpose(1, 2)
+        query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
@@ -227,15 +218,36 @@ class OlmoAttention(nn.Module):
         return attn_output, attn_weights
 
 
+class OlmoRMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6):
+        """
+        OlmoRMSNorm is equivalent to T5LayerNorm
+        """
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
+
+    def extra_repr(self):
+        return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
+
+
 class OlmoDecoderLayer(nn.Module):
     def __init__(self, config: OlmoConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
+
         self.self_attn = OlmoAttention(config=config, layer_idx=layer_idx)
 
         self.mlp = OlmoMLP(config)
-        self.input_layernorm = OlmoLayerNorm(config.hidden_size)
-        self.post_attention_layernorm = OlmoLayerNorm(config.hidden_size)
+        self.input_layernorm = OlmoRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = OlmoRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -484,7 +496,7 @@ class OlmoModel(OlmoPreTrainedModel):
         self.layers = nn.ModuleList(
             [OlmoDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = OlmoLayerNorm(config.hidden_size)
+        self.norm = OlmoRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = OlmoRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
