@@ -239,13 +239,14 @@ class Olmoe2MLP(nn.Module):
 
 
 class Olmoe2SparseMoeBlock(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: Olmoe2Config):
         super().__init__()
         self.num_experts = config.num_experts
         self.top_k = config.num_experts_per_tok
         self.norm_topk_prob = config.norm_topk_prob
         self.gate = nn.Linear(config.hidden_size, self.num_experts, bias=False)
         self.experts = nn.ModuleList([Olmoe2MLP(config) for _ in range(self.num_experts)])
+        self.shared_mlp = Olmoe2MLP(config) if config.shared_mlp else None
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -283,6 +284,11 @@ class Olmoe2SparseMoeBlock(nn.Module):
             # the `top_x` tensor here.
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+
+        if self.shared_mlp is not None:
+            shared_mlp_hidden_states = self.shared_mlp(hidden_states)
+            final_hidden_states = (shared_mlp_hidden_states + self.top_k * final_hidden_states) / (self.top_k + 1)
+
         return final_hidden_states, router_logits
 
 

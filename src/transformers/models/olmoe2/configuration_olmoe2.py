@@ -11,9 +11,9 @@ from ...modeling_rope_utils import rope_config_validation
 
 class Olmoe2Config(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a [`Olmoe2Model`]. It is used to instantiate an Olmoe2
+    This is the configuration class to store the configuration of a [`Olmoe2Model`]. It is used to instantiate an OLMoE2
     model according to the specified arguments, defining the model architecture. Instantiating a configuration with the
-    defaults will yield a similar configuration to that of the [allenai/Olmoe2-1B-7B-0924](https://huggingface.co/allenai/Olmoe2-1B-7B-0924).
+    defaults will yield a similar configuration to that of the [allenai/OLMoE2-1B-7B-0924](https://huggingface.co/allenai/OLMoE2-1B-7B-0924).
 
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
@@ -21,7 +21,7 @@ class Olmoe2Config(PretrainedConfig):
 
     Args:
         vocab_size (`int`, *optional*, defaults to 50304):
-            Vocabulary size of the Olmoe2 model. Defines the number of different tokens that can be represented by the
+            Vocabulary size of the OLMoE2 model. Defines the number of different tokens that can be represented by the
             `inputs_ids` passed when calling [`Olmoe2Model`]
         hidden_size (`int`, *optional*, defaults to 2048):
             Dimension of the hidden representations.
@@ -80,20 +80,22 @@ class Olmoe2Config(PretrainedConfig):
         num_experts (`int`, *optional*, defaults to 64):
             Number of routed experts.
         output_router_logits (`bool`, *optional*, defaults to `False`):
-            Whether or not the router logits should be returned by the model. Enabling this will also
+            Whether or not the router logits should be returned by the model. Enabeling this will also
             allow the model to output the auxiliary loss, including load balancing loss and router z-loss.
         router_aux_loss_coef (`float`, *optional*, defaults to 0.01):
             The aux loss factor for the total loss.
         norm_topk_prob (`bool`, *optional*, defaults to `False`):
             Whether to normalize the topk probabilities.
+        shared_mlp (`bool`, *optional*, defaults to `False`):
+            Whether there is a "shared" mlp that will always run.
 
     ```python
     >>> from transformers import Olmoe2Model, Olmoe2Config
 
-    >>> # Initializing a Olmoe2 7B A1B style configuration
+    >>> # Initializing a OLMoE2 7B A1B style configuration
     >>> configuration = Olmoe2Config()
 
-    >>> # Initializing a model from the Olmoe2 7B A1B style configuration
+    >>> # Initializing a model from the OLMoE2 7B A1B style configuration
     >>> model = Olmoe2Model(configuration)
 
     >>> # Accessing the model configuration
@@ -130,8 +132,16 @@ class Olmoe2Config(PretrainedConfig):
         output_router_logits=False,
         router_aux_loss_coef=0.01,
         norm_topk_prob=False,
+        shared_mlp=False,
         **kwargs,
     ):
+        super().__init__(
+            pad_token_id=pad_token_id,
+            bos_token_id=bos_token_id,
+            eos_token_id=eos_token_id,
+            tie_word_embeddings=tie_word_embeddings,
+            **kwargs,
+        )
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
@@ -164,13 +174,7 @@ class Olmoe2Config(PretrainedConfig):
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
         rope_config_validation(self)
 
-        super().__init__(
-            pad_token_id=pad_token_id,
-            bos_token_id=bos_token_id,
-            eos_token_id=eos_token_id,
-            tie_word_embeddings=tie_word_embeddings,
-            **kwargs,
-        )
+        self.shared_mlp = shared_mlp
 
 
 __all__ = ["Olmoe2Config"]
