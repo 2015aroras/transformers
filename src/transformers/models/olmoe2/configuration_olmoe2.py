@@ -86,8 +86,8 @@ class Olmoe2Config(PretrainedConfig):
             The aux loss factor for the total loss.
         norm_topk_prob (`bool`, *optional*, defaults to `False`):
             Whether to normalize the topk probabilities.
-        shared_mlp (`bool`, *optional*, defaults to `False`):
-            Whether there is a "shared" mlp that will always run.
+        shared_mlp_intermediate_size (`int`, *optional*):
+            Intermediate size of the "shared" mlp, if it exists.
 
     ```python
     >>> from transformers import Olmoe2Model, Olmoe2Config
@@ -132,7 +132,7 @@ class Olmoe2Config(PretrainedConfig):
         output_router_logits=False,
         router_aux_loss_coef=0.01,
         norm_topk_prob=False,
-        shared_mlp=False,
+        shared_mlp_intermediate_size=None,
         **kwargs,
     ):
         super().__init__(
@@ -174,7 +174,7 @@ class Olmoe2Config(PretrainedConfig):
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
         rope_config_validation(self)
 
-        self.shared_mlp = shared_mlp
+        self.shared_mlp_intermediate_size = shared_mlp_intermediate_size
 
 
 __all__ = ["Olmoe2Config"]

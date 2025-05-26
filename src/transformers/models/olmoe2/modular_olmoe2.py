@@ -1,6 +1,7 @@
 from typing import Callable, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
@@ -100,8 +101,8 @@ class Olmoe2Config(OlmoeConfig):
             The aux loss factor for the total loss.
         norm_topk_prob (`bool`, *optional*, defaults to `False`):
             Whether to normalize the topk probabilities.
-        shared_mlp (`bool`, *optional*, defaults to False):
-            Whether there is a "shared" mlp that will always run.
+        shared_mlp_intermediate_size (`int`, *optional*, defaults to None):
+            Intermediate size of the "shared" mlp, if it exists.
 
     ```python
     >>> from transformers import Olmoe2Model, Olmoe2Config
@@ -146,7 +147,7 @@ class Olmoe2Config(OlmoeConfig):
         output_router_logits=False,
         router_aux_loss_coef=0.01,
         norm_topk_prob=False,
-        shared_mlp=False,
+        shared_mlp_intermediate_size=None,
         **kwargs,
     ):
         super().__init__(
@@ -178,7 +179,7 @@ class Olmoe2Config(OlmoeConfig):
             **kwargs,
         )
 
-        self.shared_mlp = shared_mlp
+        self.shared_mlp_intermediate_size = shared_mlp_intermediate_size
 
 
 # class Olmoe2Config(OlmoeConfig):
@@ -259,14 +260,22 @@ class Olmoe2Attention(OlmoeAttention):
         return attn_output, attn_weights, past_key_value
 
 
-class Olmoe2MLP(OlmoeMLP):
-    pass
+class Olmoe2SharedMLP(OlmoeMLP):
+    def __init__(self, config: Olmoe2Config):
+        super().__init__(config)
+        self.config = config
+        self.hidden_size = config.hidden_size
+        assert config.shared_mlp_intermediate_size is not None
+        self.intermediate_size = config.shared_mlp_intermediate_size
+        self.gate_proj = torch.nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = torch.nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = torch.nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
 
 
 class Olmoe2SparseMoeBlock(OlmoeSparseMoeBlock):
     def __init__(self, config: Olmoe2Config):
         super().__init__(config)
-        self.shared_mlp = Olmoe2MLP(config) if config.shared_mlp else None
+        self.shared_mlp = Olmoe2SharedMLP(config) if config.shared_mlp_intermediate_size is not None else None
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape

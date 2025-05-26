@@ -222,6 +222,23 @@ class Olmoe2Attention(nn.Module):
         return attn_output, attn_weights, past_key_value
 
 
+class Olmoe2SharedMLP(nn.Module):
+    def __init__(self, config: Olmoe2Config):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.shared_mlp_intermediate_size
+        self.gate_proj = torch.nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = torch.nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = torch.nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.act_fn = ACT2FN[config.hidden_act]
+        assert config.shared_mlp_intermediate_size is not None
+
+    def forward(self, x):
+        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return down_proj
+
+
 class Olmoe2MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -246,7 +263,7 @@ class Olmoe2SparseMoeBlock(nn.Module):
         self.norm_topk_prob = config.norm_topk_prob
         self.gate = nn.Linear(config.hidden_size, self.num_experts, bias=False)
         self.experts = nn.ModuleList([Olmoe2MLP(config) for _ in range(self.num_experts)])
-        self.shared_mlp = Olmoe2MLP(config) if config.shared_mlp else None
+        self.shared_mlp = Olmoe2SharedMLP(config) if config.shared_mlp_intermediate_size is not None else None
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
