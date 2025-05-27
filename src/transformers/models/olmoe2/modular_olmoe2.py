@@ -8,7 +8,8 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...cache_utils import Cache
 from ...pytorch_utils import ALL_LAYERNORM_LAYERS
 from ...utils import logging
-from ..llama.modeling_llama import LlamaRMSNorm, eager_attention_forward
+from ..llama.modeling_llama import eager_attention_forward
+from ..olmo2.modeling_olmo2 import Olmo2RMSNorm, Olmo2RotaryEmbedding, apply_rotary_pos_emb
 from ..olmoe.configuration_olmoe import OlmoeConfig
 from ..olmoe.modeling_olmoe import (
     OlmoeAttention,
@@ -17,7 +18,6 @@ from ..olmoe.modeling_olmoe import (
     OlmoeMLP,
     OlmoeModel,
     OlmoeSparseMoeBlock,
-    apply_rotary_pos_emb,
 )
 
 
@@ -186,7 +186,7 @@ class Olmoe2Config(OlmoeConfig):
 #     pass
 
 
-class Olmoe2RMSNorm(LlamaRMSNorm):
+class Olmoe2RMSNorm(Olmo2RMSNorm):
     pass
 
 
@@ -283,7 +283,8 @@ class Olmoe2SparseMoeBlock(OlmoeSparseMoeBlock):
         # router_logits: (batch * sequence_length, n_experts)
         router_logits = self.gate(hidden_states)
 
-        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        # routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        routing_weights = F.sigmoid(router_logits.float())
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
         if self.norm_topk_prob:
             routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
@@ -379,6 +380,10 @@ class Olmoe2DecoderLayer(OlmoeDecoderLayer):
         return outputs
 
 
+class Olmoe2RotaryEmbedding(Olmo2RotaryEmbedding):
+    pass
+
+
 class Olmoe2Model(OlmoeModel):
     pass
 
@@ -391,5 +396,6 @@ __all__ = [
     "Olmoe2Config",
     "Olmoe2ForCausalLM",
     "Olmoe2Model",
+    "Olmoe2RotaryEmbedding",
     "Olmoe2PreTrainedModel",  # noqa: F822
 ]

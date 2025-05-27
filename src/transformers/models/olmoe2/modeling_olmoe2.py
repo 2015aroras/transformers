@@ -42,7 +42,7 @@ class Olmoe2RMSNorm(nn.Module):
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * hidden_states.to(input_dtype)
+        return (self.weight * hidden_states).to(input_dtype)
 
     def extra_repr(self):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
@@ -75,11 +75,12 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
+    q_type, k_type = q.dtype, k.dtype
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed
+    return q_embed.to(q_type), k_embed.to(k_type)
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -271,7 +272,8 @@ class Olmoe2SparseMoeBlock(nn.Module):
         # router_logits: (batch * sequence_length, n_experts)
         router_logits = self.gate(hidden_states)
 
-        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        # routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        routing_weights = F.sigmoid(router_logits.float())
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
         if self.norm_topk_prob:
             routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
@@ -424,8 +426,7 @@ class Olmoe2RotaryEmbedding(nn.Module):
             emb = torch.cat((freqs, freqs), dim=-1)
             cos = emb.cos() * self.attention_scaling
             sin = emb.sin() * self.attention_scaling
-
-        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+            return cos, sin
 
 
 @auto_docstring
@@ -954,4 +955,4 @@ class Olmoe2ForCausalLM(Olmoe2PreTrainedModel, GenerationMixin):
         )
 
 
-__all__ = ["Olmoe2ForCausalLM", "Olmoe2Model", "Olmoe2PreTrainedModel"]
+__all__ = ["Olmoe2ForCausalLM", "Olmoe2Model", "Olmoe2RotaryEmbedding", "Olmoe2PreTrainedModel"]
