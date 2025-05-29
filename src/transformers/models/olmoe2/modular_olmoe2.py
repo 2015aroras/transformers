@@ -101,7 +101,7 @@ class Olmoe2Config(OlmoeConfig):
             The aux loss factor for the total loss.
         norm_topk_prob (`bool`, *optional*, defaults to `False`):
             Whether to normalize the topk probabilities.
-        shared_mlp_intermediate_size (`int`, *optional*, defaults to None):
+        shared_mlp_intermediate_size (`int`, *optional*):
             Intermediate size of the "shared" mlp, if it exists.
 
     ```python
@@ -316,7 +316,7 @@ class Olmoe2SparseMoeBlock(OlmoeSparseMoeBlock):
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 
         if self.shared_mlp is not None:
-            shared_mlp_hidden_states = self.shared_mlp(hidden_states)
+            shared_mlp_hidden_states = self.shared_mlp(hidden_states).reshape(batch_size, sequence_length, hidden_dim)
             final_hidden_states = (shared_mlp_hidden_states + self.top_k * final_hidden_states) / (self.top_k + 1)
 
         return final_hidden_states, router_logits
@@ -396,6 +396,5 @@ __all__ = [
     "Olmoe2Config",
     "Olmoe2ForCausalLM",
     "Olmoe2Model",
-    "Olmoe2RotaryEmbedding",
     "Olmoe2PreTrainedModel",  # noqa: F822
 ]

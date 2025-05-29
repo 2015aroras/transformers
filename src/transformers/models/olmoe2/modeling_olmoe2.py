@@ -305,7 +305,7 @@ class Olmoe2SparseMoeBlock(nn.Module):
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 
         if self.shared_mlp is not None:
-            shared_mlp_hidden_states = self.shared_mlp(hidden_states)
+            shared_mlp_hidden_states = self.shared_mlp(hidden_states).reshape(batch_size, sequence_length, hidden_dim)
             final_hidden_states = (shared_mlp_hidden_states + self.top_k * final_hidden_states) / (self.top_k + 1)
 
         return final_hidden_states, router_logits
@@ -955,4 +955,4 @@ class Olmoe2ForCausalLM(Olmoe2PreTrainedModel, GenerationMixin):
         )
 
 
-__all__ = ["Olmoe2ForCausalLM", "Olmoe2Model", "Olmoe2RotaryEmbedding", "Olmoe2PreTrainedModel"]
+__all__ = ["Olmoe2ForCausalLM", "Olmoe2Model", "Olmoe2PreTrainedModel"]
