@@ -25,6 +25,16 @@ class OlmoCorePreTrainedModel(PreTrainedModel):
     config_class = OlmoCoreConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = False
+    _no_split_modules = [
+        "TransformerBlockBase",
+        "TransformerBlock",
+        "ReorderedNormTransformerBlock",
+        "MoETransformerBlock",
+        "MoEReorderedNormTransformerBlock",
+        "MoEHybridTransformerBlockBase",
+        "MoEHybridTransformerBlock",
+        "MoEHybridReorderedNormTransformerBlock",
+    ]
     _supports_flash_attn_2 = False
     _supports_sdpa = False
     _supports_flex_attn = False
