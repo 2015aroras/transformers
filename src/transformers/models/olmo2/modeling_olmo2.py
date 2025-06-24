@@ -124,7 +124,7 @@ def rotate_half(x):
 class Olmo2Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: Olmo2Config, layer_idx: Optional[int] = None):
+    def __init__(self, config: Olmo2Config, layer_idx: int):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -146,6 +146,9 @@ class Olmo2Attention(nn.Module):
         self.o_proj = nn.Linear(
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
+        assert config.layer_types is not None
+        attention_type = config.layer_types[layer_idx]
+        self.sliding_window = config.sliding_window if attention_type == "sliding_attention" else None
         self.q_norm = Olmo2RMSNorm(self.head_dim, config.rms_norm_eps)
         self.k_norm = Olmo2RMSNorm(self.head_dim, config.rms_norm_eps)
 
@@ -198,6 +201,7 @@ class Olmo2Attention(nn.Module):
             attention_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
+            sliding_window=self.sliding_window,
             **kwargs,
         )
 
@@ -350,6 +354,16 @@ class Olmo2Model(Olmo2PreTrainedModel):
         self.norm = Olmo2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Olmo2RotaryEmbedding(config=config)
         self.gradient_checkpointing = False
+
+        assert config.layer_types is not None
+        if (
+            any(layer_type == "sliding_attention" for layer_type in config.layer_types)
+            and config._attn_implementation != "flash_attention_2"
+        ):
+            logger.warning_once(
+                f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
+                "unexpected results may be encountered."
+            )
 
         # Initialize weights and apply final processing
         self.post_init()

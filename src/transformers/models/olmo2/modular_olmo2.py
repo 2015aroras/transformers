@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from ...cache_utils import Cache
+from ...configuration_utils import layer_type_validation
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...pytorch_utils import ALL_LAYERNORM_LAYERS
 from ...utils import logging
@@ -85,6 +86,10 @@ class Olmo2Config(OlmoConfig):
             The dropout ratio for the attention probabilities.
         rms_norm_eps (`float`, *optional*, defaults to 1e-05):
             The epsilon used by the rms normalization layers.
+        sliding_window (`int`, *optional*, defaults to 4096):
+            Size of the sliding window for sliding window attention.
+        layer_types (`list`, *optional*):
+            Attention pattern for each layer. Defaults to full attention in each layer.
 
     ```python
     >>> from transformers import Olmo2Model, Olmo2Config
@@ -137,6 +142,8 @@ class Olmo2Config(OlmoConfig):
         attention_bias=False,
         attention_dropout=0.0,
         rms_norm_eps=1e-5,
+        sliding_window=4096,
+        layer_types=None,
         **kwargs,
     ):
         super().__init__(
@@ -162,7 +169,13 @@ class Olmo2Config(OlmoConfig):
         )
 
         self.rms_norm_eps = rms_norm_eps
+        self.sliding_window = sliding_window
+        self.layer_types = layer_types
         del self.clip_qkv
+
+        if self.layer_types is None:
+            self.layer_types = ["full_attention" for _ in range(self.num_hidden_layers)]
+        layer_type_validation(self.layer_types)
 
 
 # OLMo2 RMS norm is identical to Llama RMS norm except:
@@ -190,8 +203,11 @@ def rotate_half(x):
 # - Norm is applied to attention queries and keys, headwise.
 # - No qkv clipping.
 class Olmo2Attention(OlmoAttention):
-    def __init__(self, config: Olmo2Config, layer_idx: Optional[int] = None):
+    def __init__(self, config: Olmo2Config, layer_idx: int):
         super().__init__(config, layer_idx=layer_idx)
+        assert config.layer_types is not None
+        attention_type = config.layer_types[layer_idx]
+        self.sliding_window = config.sliding_window if attention_type == "sliding_attention" else None
         self.q_norm = Olmo2RMSNorm(self.head_dim, config.rms_norm_eps)
         self.k_norm = Olmo2RMSNorm(self.head_dim, config.rms_norm_eps)
 
@@ -244,6 +260,7 @@ class Olmo2Attention(OlmoAttention):
             attention_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
+            sliding_window=self.sliding_window,
             **kwargs,
         )
 
@@ -322,6 +339,13 @@ class Olmo2Model(OlmoModel):
         self.layers = nn.ModuleList(
             [Olmo2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
+
+        assert config.layer_types is not None
+        if any(layer_type == "sliding_attention" for layer_type in config.layer_types) and config._attn_implementation != "flash_attention_2":
+            logger.warning_once(
+                f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
+                "unexpected results may be encountered."
+            )
 
 
 # The heads now only need to redefine the model inside to the correct `RobertaModel`
