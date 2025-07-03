@@ -356,10 +356,9 @@ class Olmo2Model(Olmo2PreTrainedModel):
         self.gradient_checkpointing = False
 
         assert config.layer_types is not None
-        if (
-            any(layer_type == "sliding_attention" for layer_type in config.layer_types)
-            and config._attn_implementation != "flash_attention_2"
-        ):
+        if any(
+            layer_type == "sliding_attention" for layer_type in config.layer_types
+        ) and config._attn_implementation not in ("flash_attention_2", "flex_attention"):
             logger.warning_once(
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
                 "unexpected results may be encountered."
