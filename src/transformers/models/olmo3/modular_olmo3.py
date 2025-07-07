@@ -11,7 +11,6 @@ from ...masking_utils import create_causal_mask, create_sliding_window_causal_ma
 from ...modeling_outputs import BaseModelOutputWithPast
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...processing_utils import Unpack
-from ...utils import logging
 from ..olmo2.configuration_olmo2 import Olmo2Config
 from ..olmo2.modeling_olmo2 import (
     Olmo2Attention,
@@ -24,9 +23,6 @@ from ..olmo2.modeling_olmo2 import (
     apply_rotary_pos_emb,
     eager_attention_forward,
 )
-
-
-logger = logging.get_logger(__name__)
 
 
 class Olmo3Config(Olmo2Config):
@@ -277,15 +273,6 @@ class Olmo3Model(Olmo2Model):
         self.layers = nn.ModuleList(
             [Olmo3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-
-        assert config.layer_types is not None
-        if any(
-            layer_type == "sliding_attention" for layer_type in config.layer_types
-        ) and config._attn_implementation not in ("flash_attention_2", "flex_attention"):
-            logger.warning_once(
-                f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
-                "unexpected results may be encountered."
-            )
 
     def forward(
         self,

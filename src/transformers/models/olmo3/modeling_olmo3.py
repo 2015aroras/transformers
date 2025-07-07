@@ -21,12 +21,9 @@ from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from ...modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
-from ...utils import auto_docstring, can_return_tuple, logging
+from ...utils import auto_docstring, can_return_tuple
 from ...utils.generic import check_model_inputs
 from .configuration_olmo3 import Olmo3Config
-
-
-logger = logging.get_logger(__name__)
 
 
 @use_kernel_forward_from_hub("RMSNorm")
@@ -349,15 +346,6 @@ class Olmo3Model(Olmo3PreTrainedModel):
         self.norm = Olmo3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Olmo3RotaryEmbedding(config=config)
         self.gradient_checkpointing = False
-
-        assert config.layer_types is not None
-        if any(
-            layer_type == "sliding_attention" for layer_type in config.layer_types
-        ) and config._attn_implementation not in ("flash_attention_2", "flex_attention"):
-            logger.warning_once(
-                f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
-                "unexpected results may be encountered."
-            )
 
         # Initialize weights and apply final processing
         self.post_init()
