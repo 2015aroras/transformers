@@ -27,7 +27,6 @@ from .configuration_olmo3 import Olmo3Config
 
 
 @use_kernel_forward_from_hub("RMSNorm")
-# Copied from transformers.models.olmo2.modeling_olmo2.Olmo2RMSNorm with Olmo2->Olmo3
 class Olmo3RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
@@ -121,7 +120,6 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
-# Copied from transformers.models.olmo2.modeling_olmo2.Olmo2Attention with Olmo2->Olmo3
 class Olmo3Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
@@ -198,7 +196,6 @@ class Olmo3Attention(nn.Module):
         return attn_output, attn_weights
 
 
-# Copied from transformers.models.olmo2.modeling_olmo2.Olmo2MLP with Olmo2->Olmo3
 class Olmo3MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -215,7 +212,6 @@ class Olmo3MLP(nn.Module):
         return down_proj
 
 
-# Copied from transformers.models.olmo2.modeling_olmo2.Olmo2DecoderLayer with Olmo2->Olmo3
 class Olmo3DecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: Olmo3Config, layer_idx: int):
         super().__init__()
@@ -259,7 +255,6 @@ class Olmo3DecoderLayer(GradientCheckpointingLayer):
         return hidden_states
 
 
-# Copied from transformers.models.olmo2.modeling_olmo2.Olmo2RotaryEmbedding with Olmo2->Olmo3
 class Olmo3RotaryEmbedding(nn.Module):
     def __init__(self, config: Olmo3Config, device=None):
         super().__init__()
@@ -294,7 +289,6 @@ class Olmo3RotaryEmbedding(nn.Module):
 
 
 @auto_docstring
-# Copied from transformers.models.olmo2.modeling_olmo2.Olmo2PreTrainedModel with Olmo2->Olmo3
 class Olmo3PreTrainedModel(PreTrainedModel):
     config_class = Olmo3Config
     base_model_prefix = "model"
@@ -328,7 +322,6 @@ class Olmo3PreTrainedModel(PreTrainedModel):
 
 
 @auto_docstring
-# Copied from transformers.models.olmo2.modeling_olmo2.Olmo2Model with Olmo2->Olmo3
 class Olmo3Model(Olmo3PreTrainedModel):
     def __init__(self, config: Olmo3Config):
         super().__init__(config)
@@ -414,7 +407,6 @@ class Olmo3Model(Olmo3PreTrainedModel):
 
 
 @auto_docstring
-# Copied from transformers.models.olmo2.modeling_olmo2.Olmo2ForCausalLM with Olmo2->Olmo3,olmo2->olmo3
 class Olmo3ForCausalLM(Olmo3PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}

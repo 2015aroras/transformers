@@ -9,22 +9,24 @@ from ...cache_utils import Cache
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...processing_utils import Unpack
 from ...utils import logging
-from ..llama.modeling_llama import LlamaPreTrainedModel, LlamaRMSNorm, eager_attention_forward
-from ..olmo.configuration_olmo import OlmoConfig
-from ..olmo.modeling_olmo import (
-    OlmoAttention,
-    OlmoDecoderLayer,
-    OlmoForCausalLM,
-    OlmoModel,
-    OlmoRotaryEmbedding,
+from ..olmo2.configuration_olmo2 import Olmo2Config
+from ..olmo2.modeling_olmo2 import (
+    Olmo2Attention,
+    Olmo2DecoderLayer,
+    Olmo2ForCausalLM,
+    Olmo2Model,
+    Olmo2PreTrainedModel,
+    Olmo2RMSNorm,
+    Olmo2RotaryEmbedding,
     apply_rotary_pos_emb,
+    eager_attention_forward,
 )
 
 
 logger = logging.get_logger(__name__)
 
 
-class Olmo3Config(OlmoConfig):
+class Olmo3Config(Olmo2Config):
     r"""
     This is the configuration class to store the configuration of a [`Olmo3Model`]. It is used to instantiate an OLMo3
     model according to the specified arguments, defining the model architecture. Instantiating a configuration with the
@@ -160,35 +162,17 @@ class Olmo3Config(OlmoConfig):
             rope_scaling=rope_scaling,
             attention_bias=attention_bias,
             attention_dropout=attention_dropout,
+            rms_norm_eps=rms_norm_eps,
             **kwargs,
         )
 
-        self.rms_norm_eps = rms_norm_eps
-        del self.clip_qkv
+
+class Olmo3RMSNorm(Olmo2RMSNorm):
+    pass
 
 
-# OLMo3 RMS norm is identical to Llama RMS norm except:
-# - Weight and hidden states are multiplied before converting back to the input dtype, rather than after.
-class Olmo3RMSNorm(LlamaRMSNorm):
-    def forward(self, hidden_states):
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return (self.weight * hidden_states).to(input_dtype)
-
-
-def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
-
-
-# Olmo3 attention is identical to OLMo attention except:
-# - Norm is applied to attention queries and keys.
-# - No qkv clipping.
-class Olmo3Attention(OlmoAttention):
+# Olmo3 attention is identical to OLMo 2 attention except:
+class Olmo3Attention(Olmo2Attention):
     def __init__(self, config: Olmo3Config, layer_idx: Optional[int] = None):
         super().__init__(config, layer_idx=layer_idx)
         self.q_norm = Olmo3RMSNorm(config.num_attention_heads * self.head_dim, config.rms_norm_eps)
@@ -242,10 +226,8 @@ class Olmo3Attention(OlmoAttention):
         return attn_output, attn_weights
 
 
-# The OLMo3 layers are identical to those of the OLMo model except:
-# - RMSNorm is used instead of standard layer norm.
-# - Norm is applied after attention/feedforward rather than before.
-class Olmo3DecoderLayer(OlmoDecoderLayer):
+# The OLMo3 layers are identical to those of the OLMo 2 model except:
+class Olmo3DecoderLayer(Olmo2DecoderLayer):
     def __init__(self, config: Olmo3Config, layer_idx: int):
         super().__init__(config, layer_idx=layer_idx)
         self.post_attention_layernorm = Olmo3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -286,17 +268,16 @@ class Olmo3DecoderLayer(OlmoDecoderLayer):
         return hidden_states
 
 
-class Olmo3RotaryEmbedding(OlmoRotaryEmbedding):
+class Olmo3RotaryEmbedding(Olmo2RotaryEmbedding):
     pass
 
 
-class Olmo3PreTrainedModel(LlamaPreTrainedModel):
+class Olmo3PreTrainedModel(Olmo2PreTrainedModel):
     pass
 
 
-# The OLMo3 model is identical to the OLMo model, except RMSNorm is used instead of
-# standard layer norm for the output norm.
-class Olmo3Model(OlmoModel):
+# The OLMo 3 model is identical to the OLMo 2 model, except 
+class Olmo3Model(Olmo2Model):
     def __init__(self, config: Olmo3Config):
         super().__init__(config)
         self.norm = Olmo3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -306,7 +287,7 @@ class Olmo3Model(OlmoModel):
 
 
 # The heads now only need to redefine the model inside to the correct `RobertaModel`
-class Olmo3ForCausalLM(OlmoForCausalLM):
+class Olmo3ForCausalLM(Olmo2ForCausalLM):
     pass
 
 
