@@ -188,6 +188,7 @@ class Olmo3RMSNorm(Olmo2RMSNorm):
 
 
 # Olmo3 attention is identical to OLMo 2 attention except:
+# - Norm is applied headwise to attention queries and keys.
 # - Sliding window attention is used for 3 out of 4 layers.
 class Olmo3Attention(Olmo2Attention):
     def __init__(self, config: Olmo3Config, layer_idx: int):
@@ -195,8 +196,8 @@ class Olmo3Attention(Olmo2Attention):
         assert config.layer_types is not None
         self.attention_type = config.layer_types[layer_idx]
         self.sliding_window = config.sliding_window if self.attention_type == "sliding_attention" else None
-        self.q_norm = Olmo3RMSNorm(config.num_attention_heads * self.head_dim, config.rms_norm_eps)
-        self.k_norm = Olmo3RMSNorm(config.num_key_value_heads * self.head_dim, config.rms_norm_eps)
+        self.q_norm = Olmo3RMSNorm(self.head_dim, config.rms_norm_eps)
+        self.k_norm = Olmo3RMSNorm(self.head_dim, config.rms_norm_eps)
 
     def forward(
         self,
@@ -210,13 +211,20 @@ class Olmo3Attention(Olmo2Attention):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_norm(self.q_proj(hidden_states))
-        key_states = self.k_norm(self.k_proj(hidden_states))
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        query_states = query_states.view(hidden_shape).transpose(1, 2)
-        key_states = key_states.view(hidden_shape).transpose(1, 2)
-        value_states = value_states.view(hidden_shape).transpose(1, 2)
+        query_states = query_states.view(hidden_shape)
+        key_states = key_states.view(hidden_shape)
+        value_states = value_states.view(hidden_shape)
+
+        query_states = self.q_norm(query_states)
+        key_states = self.k_norm(key_states)
+
+        query_states = query_states.transpose(1, 2)
+        key_states = key_states.transpose(1, 2)
+        value_states = value_states.transpose(1, 2)
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
