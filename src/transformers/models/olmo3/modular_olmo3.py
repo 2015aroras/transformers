@@ -179,7 +179,9 @@ class Olmo3Config(Olmo2Config):
         self.sliding_window = sliding_window
         self.layer_types = layer_types
         if self.layer_types is None:
-            self.layer_types = ["sliding_attention" if i % 4 != 0 else "full_attention" for i in range(self.num_hidden_layers)]
+            self.layer_types = [
+                "sliding_attention" if i % 4 != 0 else "full_attention" for i in range(self.num_hidden_layers)
+            ]
         layer_type_validation(self.layer_types)
 
 
@@ -278,7 +280,9 @@ class Olmo3Model(Olmo2Model):
         )
 
         assert config.layer_types is not None
-        if any(layer_type == "sliding_attention" for layer_type in config.layer_types) and config._attn_implementation not in ("flash_attention_2", "flex_attention"):
+        if any(
+            layer_type == "sliding_attention" for layer_type in config.layer_types
+        ) and config._attn_implementation not in ("flash_attention_2", "flex_attention"):
             logger.warning_once(
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
                 "unexpected results may be encountered."
