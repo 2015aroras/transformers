@@ -4,7 +4,7 @@
 #             the file from the modular. If any change should be done, please apply the change to the
 #                          modular_olmo3.py file directly. One of our CI enforces this.
 #                🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨
-from ...configuration_utils import PretrainedConfig
+from ...configuration_utils import PretrainedConfig, layer_type_validation
 
 
 class Olmo3Config(PretrainedConfig):
@@ -70,6 +70,10 @@ class Olmo3Config(PretrainedConfig):
             The dropout ratio for the attention probabilities.
         rms_norm_eps (`float`, *optional*, defaults to 1e-05):
             The epsilon used by the rms normalization layers.
+        sliding_window (`int`, *optional*, defaults to 4096):
+            Size of the sliding window for sliding window attention.
+        layer_types (`list`, *optional*):
+            Attention pattern for each layer. Defaults to full attention in each layer.
 
     ```python
     >>> from transformers import Olmo3Model, Olmo3Config
@@ -123,6 +127,8 @@ class Olmo3Config(PretrainedConfig):
         attention_bias=False,
         attention_dropout=0.0,
         rms_norm_eps=1e-5,
+        sliding_window=4096,
+        layer_types=None,
         **kwargs,
     ):
         super().__init__(
@@ -154,6 +160,14 @@ class Olmo3Config(PretrainedConfig):
         self.attention_dropout = attention_dropout
 
         self.rms_norm_eps = rms_norm_eps
+
+        self.sliding_window = sliding_window
+        self.layer_types = layer_types
+        if self.layer_types is None:
+            self.layer_types = [
+                "sliding_attention" if i % 4 != 0 else "full_attention" for i in range(self.num_hidden_layers)
+            ]
+        layer_type_validation(self.layer_types)
 
     def _rope_scaling_validation(self):
         """

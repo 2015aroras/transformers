@@ -5,7 +5,11 @@ import torch.nn as nn
 
 from transformers.utils.generic import TransformersKwargs
 
-from ...cache_utils import Cache
+from ...cache_utils import Cache, DynamicCache
+from ...configuration_utils import layer_type_validation
+from ...masking_utils import create_causal_mask, create_sliding_window_causal_mask
+from ...modeling_flash_attention_utils import FlashAttentionKwargs
+from ...modeling_outputs import BaseModelOutputWithPast
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...processing_utils import Unpack
 from ...utils import logging
@@ -89,6 +93,10 @@ class Olmo3Config(Olmo2Config):
             The dropout ratio for the attention probabilities.
         rms_norm_eps (`float`, *optional*, defaults to 1e-05):
             The epsilon used by the rms normalization layers.
+        sliding_window (`int`, *optional*, defaults to 4096):
+            Size of the sliding window for sliding window attention.
+        layer_types (`list`, *optional*):
+            Attention pattern for each layer. Defaults to full attention in each layer.
 
     ```python
     >>> from transformers import Olmo3Model, Olmo3Config
@@ -141,6 +149,8 @@ class Olmo3Config(Olmo2Config):
         attention_bias=False,
         attention_dropout=0.0,
         rms_norm_eps=1e-5,
+        sliding_window=4096,
+        layer_types=None,
         **kwargs,
     ):
         super().__init__(
@@ -166,15 +176,25 @@ class Olmo3Config(Olmo2Config):
             **kwargs,
         )
 
+        self.sliding_window = sliding_window
+        self.layer_types = layer_types
+        if self.layer_types is None:
+            self.layer_types = ["sliding_attention" if i % 4 != 0 else "full_attention" for i in range(self.num_hidden_layers)]
+        layer_type_validation(self.layer_types)
+
 
 class Olmo3RMSNorm(Olmo2RMSNorm):
     pass
 
 
 # Olmo3 attention is identical to OLMo 2 attention except:
+# - Sliding window attention is used for 3 out of 4 layers.
 class Olmo3Attention(Olmo2Attention):
-    def __init__(self, config: Olmo3Config, layer_idx: Optional[int] = None):
+    def __init__(self, config: Olmo3Config, layer_idx: int):
         super().__init__(config, layer_idx=layer_idx)
+        assert config.layer_types is not None
+        self.attention_type = config.layer_types[layer_idx]
+        self.sliding_window = config.sliding_window if self.attention_type == "sliding_attention" else None
         self.q_norm = Olmo3RMSNorm(config.num_attention_heads * self.head_dim, config.rms_norm_eps)
         self.k_norm = Olmo3RMSNorm(config.num_key_value_heads * self.head_dim, config.rms_norm_eps)
 
@@ -218,6 +238,7 @@ class Olmo3Attention(Olmo2Attention):
             attention_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
+            sliding_window=self.sliding_window,
             **kwargs,
         )
 
@@ -226,46 +247,8 @@ class Olmo3Attention(Olmo2Attention):
         return attn_output, attn_weights
 
 
-# The OLMo3 layers are identical to those of the OLMo 2 model except:
 class Olmo3DecoderLayer(Olmo2DecoderLayer):
-    def __init__(self, config: Olmo3Config, layer_idx: int):
-        super().__init__(config, layer_idx=layer_idx)
-        self.post_attention_layernorm = Olmo3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_feedforward_layernorm = Olmo3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.self_attn = Olmo3Attention(config=config, layer_idx=layer_idx)
-        del self.input_layernorm
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
-        **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple[torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]]:
-        residual = hidden_states
-        hidden_states, _ = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
-            **kwargs,
-        )
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = residual + hidden_states
-
-        # Fully Connected
-        residual = hidden_states
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = self.post_feedforward_layernorm(hidden_states)
-        hidden_states = residual + hidden_states
-        return hidden_states
+    pass
 
 
 class Olmo3RotaryEmbedding(Olmo2RotaryEmbedding):
@@ -276,13 +259,130 @@ class Olmo3PreTrainedModel(Olmo2PreTrainedModel):
     pass
 
 
-# The OLMo 3 model is identical to the OLMo 2 model, except 
+# The OLMo 3 model is identical to the OLMo 2 model, except:
+# - Sliding window attention is used for 3 out of 4 layers.
 class Olmo3Model(Olmo2Model):
     def __init__(self, config: Olmo3Config):
         super().__init__(config)
         self.norm = Olmo3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.layers = nn.ModuleList(
             [Olmo3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
+
+        assert config.layer_types is not None
+        if any(layer_type == "sliding_attention" for layer_type in config.layer_types) and config._attn_implementation not in ("flash_attention_2", "flex_attention"):
+            logger.warning_once(
+                f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
+                "unexpected results may be encountered."
+            )
+
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
+    ) -> BaseModelOutputWithPast:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+
+        if (input_ids is None) ^ (inputs_embeds is not None):
+            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+
+        if self.gradient_checkpointing and self.training and use_cache:
+            logger.warning_once(
+                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
+            )
+            use_cache = False
+
+        # TODO (joao): remove this exception in v4.56 -- it exists for users that try to pass a legacy cache
+        if not isinstance(past_key_values, (type(None), Cache)):
+            raise ValueError("The `past_key_values` should be either a `Cache` object or `None`.")
+
+        if inputs_embeds is None:
+            inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
+
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache()
+
+        if cache_position is None:
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            cache_position: torch.Tensor = torch.arange(
+                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
+            )
+
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
+
+        # It may already have been prepared by e.g. `generate`
+        if not isinstance(causal_mask_mapping := attention_mask, dict):
+            # Prepare mask arguments
+            mask_kwargs = {
+                "config": self.config,
+                "input_embeds": inputs_embeds,
+                "attention_mask": attention_mask,
+                "cache_position": cache_position,
+                "past_key_values": past_key_values,
+                "output_attentions": output_attentions,
+            }
+            # Create the masks
+            causal_mask_mapping = {
+                "full_attention": create_causal_mask(**mask_kwargs),
+                "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
+            }
+
+        hidden_states = inputs_embeds
+
+        # create position embeddings to be shared across the decoder layers
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+
+        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+            assert isinstance(decoder_layer, Olmo3DecoderLayer)
+
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+            layer_outputs = decoder_layer(
+                hidden_states,
+                attention_mask=causal_mask_mapping[decoder_layer.self_attn.attention_type],
+                position_ids=position_ids,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **flash_attn_kwargs,
+            )
+
+            hidden_states = layer_outputs[0]
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+        hidden_states = self.norm(hidden_states)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=past_key_values if use_cache else None,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
         )
 
 
