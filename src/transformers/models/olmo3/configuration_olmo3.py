@@ -70,7 +70,7 @@ class Olmo3Config(PretrainedConfig):
             The dropout ratio for the attention probabilities.
         rms_norm_eps (`float`, *optional*, defaults to 1e-05):
             The epsilon used by the rms normalization layers.
-        sliding_window (`int`, *optional*, defaults to 4096):
+        sliding_window (`int`, *optional*, defaults to 4097):
             Size of the sliding window for sliding window attention.
         layer_types (`list`, *optional*):
             Attention pattern for each layer. Defaults to full attention in each layer.
@@ -127,7 +127,7 @@ class Olmo3Config(PretrainedConfig):
         attention_bias=False,
         attention_dropout=0.0,
         rms_norm_eps=1e-5,
-        sliding_window=4096,
+        sliding_window=4097,
         layer_types=None,
         **kwargs,
     ):
