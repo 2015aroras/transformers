@@ -589,6 +589,8 @@
         title: OLMo3
       - local: model_doc/olmoe
         title: OLMoE
+      - local: model_doc/olmoe2
+        title: OLMoE2
       - local: model_doc/open-llama
         title: Open-Llama
       - local: model_doc/opt
