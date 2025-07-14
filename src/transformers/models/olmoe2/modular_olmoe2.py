@@ -318,6 +318,7 @@ class Olmoe2HybridMoeBlock(Olmoe2MLP):
 class Olmoe2DecoderLayer(Olmo3DecoderLayer):
     def __init__(self, config: Olmoe2Config, layer_idx: int):
         super().__init__(config, layer_idx=layer_idx)
+        self.config = config
 
         if layer_idx in config.mlp_only_layers:
             self.mlp = Olmoe2MLP(config)

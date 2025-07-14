@@ -283,6 +283,7 @@ class Olmoe2DecoderLayer(GradientCheckpointingLayer):
         self.mlp = Olmoe2MLP(config)
         self.post_attention_layernorm = Olmoe2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_feedforward_layernorm = Olmoe2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.config = config
 
         if layer_idx in config.mlp_only_layers:
             self.mlp = Olmoe2MLP(config)
