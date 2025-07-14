@@ -5,56 +5,59 @@
 #                          modular_olmoe2.py file directly. One of our CI enforces this.
 #                🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨
 from ...configuration_utils import PretrainedConfig, layer_type_validation
+from ...modeling_rope_utils import rope_config_validation
 
 
 class Olmoe2Config(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`Olmoe2Model`]. It is used to instantiate an OLMoE2
     model according to the specified arguments, defining the model architecture. Instantiating a configuration with the
-    defaults will yield a similar configuration to that of the [allenai/OLMoE-2-3B-7B](https://huggingface.co/allenai/OLMoE-2-3B-7B).
+    defaults will yield a similar configuration to that of the [allenai/OLMoE2-1B-7B-0924](https://huggingface.co/allenai/OLMoE2-1B-7B-0924).
 
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
 
 
     Args:
-        vocab_size (`int`, *optional*, defaults to 50304):
-            Vocabulary size of the Olmoe2 model. Defines the number of different tokens that can be represented by the
+        vocab_size (`int`, *optional*, defaults to 100278):
+            Vocabulary size of the OLMoE2 model. Defines the number of different tokens that can be represented by the
             `inputs_ids` passed when calling [`Olmoe2Model`]
-        hidden_size (`int`, *optional*, defaults to 4096):
+        hidden_size (`int`, *optional*, defaults to 12888):
             Dimension of the hidden representations.
-        intermediate_size (`int`, *optional*, defaults to 11008):
+        intermediate_size (`int`, *optional*, defaults to 4096):
             Dimension of the MLP representations.
         num_hidden_layers (`int`, *optional*, defaults to 32):
             Number of hidden layers in the Transformer decoder.
-        num_attention_heads (`int`, *optional*, defaults to 32):
+        num_attention_heads (`int`, *optional*, defaults to 16):
             Number of attention heads for each attention layer in the Transformer decoder.
-        num_key_value_heads (`int`, *optional*):
+        num_key_value_heads (`int`, *optional*, defaults to 4):
             This is the number of key_value heads that should be used to implement Grouped Query Attention. If
             `num_key_value_heads=num_attention_heads`, the model will use Multi Head Attention (MHA), if
             `num_key_value_heads=1` the model will use Multi Query Attention (MQA) otherwise GQA is used. When
             converting a multi-head checkpoint to a GQA checkpoint, each group key and value head should be constructed
-            by meanpooling all the original heads within that group. For more details, check out [this
-            paper](https://huggingface.co/papers/2305.13245). If it is not specified, will default to
+            by meanpooling all the original heads within that group. For more details checkout [this
+            paper](https://arxiv.org/pdf/2305.13245.pdf). If it is not specified, will default to
             `num_attention_heads`.
         hidden_act (`str` or `function`, *optional*, defaults to `"silu"`):
             The non-linear activation function (function or string) in the decoder.
-        max_position_embeddings (`int`, *optional*, defaults to 2048):
+        max_position_embeddings (`int`, *optional*, defaults to 4096):
             The maximum sequence length that this model might ever be used with.
         initializer_range (`float`, *optional*, defaults to 0.02):
             The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
+        rms_norm_eps (`float`, *optional*, defaults to 1e-06):
+            The epsilon used by the rms normalization layers.
         use_cache (`bool`, *optional*, defaults to `True`):
             Whether or not the model should return the last key/values attentions (not used by all models). Only
             relevant if `config.is_decoder=True`.
-        pad_token_id (`int`, *optional*, defaults to 1):
+        pad_token_id (`int`, *optional*, defaults to 100277):
             Padding token id.
         bos_token_id (`int`, *optional*):
             Beginning of stream token id.
-        eos_token_id (`int`, *optional*, defaults to 50279):
+        eos_token_id (`int`, *optional*, defaults to 100257):
             End of stream token id.
         tie_word_embeddings (`bool`, *optional*, defaults to `False`):
             Whether to tie weight embeddings
-        rope_theta (`float`, *optional*, defaults to 10000.0):
+        rope_theta (`float`, *optional*, defaults to 500000.0):
             The base period of the RoPE embeddings.
         rope_scaling (`Dict`, *optional*):
             Dictionary containing the scaling configuration for the RoPE embeddings. Currently supports two scaling
@@ -68,8 +71,24 @@ class Olmoe2Config(PretrainedConfig):
             Whether to use a bias in the query, key, value and output projection layers during self-attention.
         attention_dropout (`float`, *optional*, defaults to 0.0):
             The dropout ratio for the attention probabilities.
-        rms_norm_eps (`float`, *optional*, defaults to 1e-05):
-            The epsilon used by the rms normalization layers.
+        num_experts_per_tok (`int`, *optional*, defaults to 8):
+            Number of selected experts.
+        num_experts (`int`, *optional*, defaults to 128):
+            Number of routed experts.
+        output_router_logits (`bool`, *optional*, defaults to `False`):
+            Whether or not the router logits should be returned by the model. Enabling this will also
+            allow the model to output the auxiliary loss, including load balancing loss and router z-loss.
+        router_aux_loss_coef (`float`, *optional*, defaults to 0.01):
+            The aux loss factor for the total loss.
+        norm_topk_prob (`bool`, *optional*, defaults to `False`):
+            Whether to normalize the topk probabilities.
+        moe_intermediate_size (`int`, *optional*, defaults to 1024):
+            Intermediate size of the routed expert.
+        shared_mlp_intermediate_size (`int`, *optional*, defaults to 4096):
+            Intermediate size of the shared MLP in MoE layers.
+        mlp_only_layers (`list[int]`, *optional*, defaults to `[0]`):
+            Indicate which layers use Olmoe2MLP rather than Olmoe2HybridMoeBlock
+            The list contains layer index, from 0 to num_layers-1 if we have num_layers layers
         sliding_window (`int`, *optional*, defaults to 4097):
             Size of the sliding window for sliding window attention.
         layer_types (`list`, *optional*):
@@ -78,10 +97,10 @@ class Olmoe2Config(PretrainedConfig):
     ```python
     >>> from transformers import Olmoe2Model, Olmoe2Config
 
-    >>> # Initializing a Olmoe2 7B style configuration
+    >>> # Initializing a OLMoE2 7B style configuration
     >>> configuration = Olmoe2Config()
 
-    >>> # Initializing a model from the Olmoe2 7B style configuration
+    >>> # Initializing a model from the OLMoE2 7B style configuration
     >>> model = Olmoe2Model(configuration)
 
     >>> # Accessing the model configuration
@@ -96,6 +115,9 @@ class Olmoe2Config(PretrainedConfig):
         "layers.*.self_attn.k_proj": "colwise_rep",  # we need to replicate here due to the added norm on q and k
         "layers.*.self_attn.v_proj": "colwise_rep",  # we need to replicate here due to the added norm on q and k
         "layers.*.self_attn.o_proj": "rowwise_rep",  # we need to replicate here due to the added norm on q and k
+        "layers.*.mlp.experts.*.gate_proj": "colwise",
+        "layers.*.mlp.experts.*.up_proj": "colwise",
+        "layers.*.mlp.experts.*.down_proj": "rowwise",
         "layers.*.mlp.gate_proj": "colwise",
         "layers.*.mlp.up_proj": "colwise",
         "layers.*.mlp.down_proj": "rowwise",
@@ -108,25 +130,33 @@ class Olmoe2Config(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size=50304,
-        hidden_size=4096,
-        intermediate_size=11008,
+        vocab_size=100278,
+        hidden_size=12888,
+        intermediate_size=4096,
         num_hidden_layers=32,
-        num_attention_heads=32,
-        num_key_value_heads=None,
+        num_attention_heads=16,
+        num_key_value_heads=4,
         hidden_act="silu",
-        max_position_embeddings=2048,
+        max_position_embeddings=4096,
         initializer_range=0.02,
+        rms_norm_eps=1e-06,
         use_cache=True,
-        pad_token_id=1,
+        pad_token_id=100277,
         bos_token_id=None,
-        eos_token_id=50279,
+        eos_token_id=100257,
         tie_word_embeddings=False,
-        rope_theta=10000.0,
+        rope_theta=500000.0,
         rope_scaling=None,
         attention_bias=False,
         attention_dropout=0.0,
-        rms_norm_eps=1e-5,
+        num_experts_per_tok=8,
+        num_experts=128,
+        output_router_logits=False,
+        router_aux_loss_coef=0.01,
+        norm_topk_prob=False,
+        moe_intermediate_size=1024,
+        shared_mlp_intermediate_size=4096,
+        mlp_only_layers=None,
         sliding_window=4097,
         layer_types=None,
         **kwargs,
@@ -152,14 +182,26 @@ class Olmoe2Config(PretrainedConfig):
         self.num_key_value_heads = num_key_value_heads
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
+        self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
-        self._rope_scaling_validation()
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.num_experts_per_tok = num_experts_per_tok
+        self.num_experts = num_experts
+        self.output_router_logits = output_router_logits
+        self.router_aux_loss_coef = router_aux_loss_coef
+        self.norm_topk_prob = norm_topk_prob
+        # Validate the correctness of rotary position embeddings parameters
+        # BC: if there is a 'type' field, move it to 'rope_type'.
+        if self.rope_scaling is not None and "type" in self.rope_scaling:
+            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
+        rope_config_validation(self)
 
-        self.rms_norm_eps = rms_norm_eps
+        self.moe_intermediate_size = moe_intermediate_size
+        self.shared_mlp_intermediate_size = shared_mlp_intermediate_size
+        self.mlp_only_layers = [0] if mlp_only_layers is None else mlp_only_layers
 
         self.sliding_window = sliding_window
         self.layer_types = layer_types
@@ -168,26 +210,6 @@ class Olmoe2Config(PretrainedConfig):
                 "sliding_attention" if i % 4 != 0 else "full_attention" for i in range(self.num_hidden_layers)
             ]
         layer_type_validation(self.layer_types)
-
-    def _rope_scaling_validation(self):
-        """
-        Validate the `rope_scaling` configuration.
-        """
-        if self.rope_scaling is None:
-            return
-
-        if not isinstance(self.rope_scaling, dict) or len(self.rope_scaling) != 2:
-            raise ValueError(
-                f"`rope_scaling` must be a dictionary with two fields, `type` and `factor`, got {self.rope_scaling}"
-            )
-        rope_scaling_type = self.rope_scaling.get("type", None)
-        rope_scaling_factor = self.rope_scaling.get("factor", None)
-        if rope_scaling_type is None or rope_scaling_type not in ["linear", "dynamic"]:
-            raise ValueError(
-                f"`rope_scaling`'s type field must be one of ['linear', 'dynamic'], got {rope_scaling_type}"
-            )
-        if rope_scaling_factor is None or not isinstance(rope_scaling_factor, float) or rope_scaling_factor <= 1.0:
-            raise ValueError(f"`rope_scaling`'s factor field must be a float > 1, got {rope_scaling_factor}")
 
 
 __all__ = ["Olmoe2Config"]
