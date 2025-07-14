@@ -3,14 +3,13 @@ from typing import Callable, Optional
 import torch
 import torch.nn as nn
 
-from transformers.utils.generic import TransformersKwargs
-
 from ...cache_utils import Cache, DynamicCache
 from ...configuration_utils import layer_type_validation
 from ...masking_utils import create_causal_mask, create_sliding_window_causal_mask
 from ...modeling_outputs import BaseModelOutputWithPast
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...processing_utils import Unpack
+from ...utils import TransformersKwargs
 from ..olmo2.configuration_olmo2 import Olmo2Config
 from ..olmo2.modeling_olmo2 import (
     Olmo2Attention,
@@ -36,7 +35,7 @@ class Olmo3Config(Olmo2Config):
 
 
     Args:
-        vocab_size (`int`, *optional*, defaults to 50304):
+        vocab_size (`int`, *optional*, defaults to 100278):
             Vocabulary size of the Olmo3 model. Defines the number of different tokens that can be represented by the
             `inputs_ids` passed when calling [`Olmo3Model`]
         hidden_size (`int`, *optional*, defaults to 4096):
@@ -64,15 +63,15 @@ class Olmo3Config(Olmo2Config):
         use_cache (`bool`, *optional*, defaults to `True`):
             Whether or not the model should return the last key/values attentions (not used by all models). Only
             relevant if `config.is_decoder=True`.
-        pad_token_id (`int`, *optional*, defaults to 1):
+        pad_token_id (`int`, *optional*, defaults to 100277):
             Padding token id.
         bos_token_id (`int`, *optional*):
             Beginning of stream token id.
-        eos_token_id (`int`, *optional*, defaults to 50279):
+        eos_token_id (`int`, *optional*, defaults to 100257):
             End of stream token id.
         tie_word_embeddings (`bool`, *optional*, defaults to `False`):
             Whether to tie weight embeddings
-        rope_theta (`float`, *optional*, defaults to 10000.0):
+        rope_theta (`float`, *optional*, defaults to 500000.0):
             The base period of the RoPE embeddings.
         rope_scaling (`Dict`, *optional*):
             Dictionary containing the scaling configuration for the RoPE embeddings. Currently supports two scaling
@@ -125,7 +124,7 @@ class Olmo3Config(Olmo2Config):
 
     def __init__(
         self,
-        vocab_size=50304,
+        vocab_size=100278,
         hidden_size=4096,
         intermediate_size=11008,
         num_hidden_layers=32,
@@ -135,11 +134,11 @@ class Olmo3Config(Olmo2Config):
         max_position_embeddings=2048,
         initializer_range=0.02,
         use_cache=True,
-        pad_token_id=1,
+        pad_token_id=100277,
         bos_token_id=None,
-        eos_token_id=50279,
+        eos_token_id=100257,
         tie_word_embeddings=False,
-        rope_theta=10000.0,
+        rope_theta=500000.0,
         rope_scaling=None,
         attention_bias=False,
         attention_dropout=0.0,
@@ -204,24 +203,13 @@ class Olmo3Attention(Olmo2Attention):
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
-
-        query_states = query_states.view(hidden_shape)
-        key_states = key_states.view(hidden_shape)
-        value_states = value_states.view(hidden_shape)
-
-        query_states = self.q_norm(query_states)
-        key_states = self.k_norm(key_states)
-
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
-        value_states = value_states.transpose(1, 2)
+        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
