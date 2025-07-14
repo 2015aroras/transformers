@@ -276,7 +276,7 @@ class Olmoe2SparseMoeBlock(OlmoeSparseMoeBlock):
         # we cast back to the input dtype
         routing_weights = routing_weights.to(hidden_states.dtype)
 
-        final_hidden_states = self.shared_mlp(hidden_states)
+        final_hidden_states = torch.zeros_like(hidden_states)
 
         # One hot encode the selected experts to create an expert mask
         # this will be used to easily index which expert is going to be selected
