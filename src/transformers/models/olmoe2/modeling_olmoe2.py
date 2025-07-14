@@ -286,10 +286,10 @@ class Olmoe2DecoderLayer(GradientCheckpointingLayer):
 
         if layer_idx in config.mlp_only_layers:
             self.mlp = Olmoe2MLP(config)
-            self.block_hybrid_moe = None
+            self.is_mlp_only_layer = True
         else:
-            self.mlp = None
-            self.block_hybrid_moe = Olmoe2HybridMoeBlock(config)
+            self.mlp = Olmoe2HybridMoeBlock(config)
+            self.is_mlp_only_layer = False
 
     def forward(
         self,
@@ -318,12 +318,11 @@ class Olmoe2DecoderLayer(GradientCheckpointingLayer):
 
         # Fully Connected
         residual = hidden_states
-        if self.mlp is not None:
+        if self.is_mlp_only_layer:
             hidden_states = self.mlp(hidden_states)
             router_logits = None
         else:
-            assert self.block_hybrid_moe is not None
-            hidden_states, router_logits = self.block_hybrid_moe(hidden_states)
+            hidden_states, router_logits = self.mlp(hidden_states)
         hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = residual + hidden_states
 
