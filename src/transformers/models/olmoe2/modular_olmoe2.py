@@ -110,7 +110,7 @@ class Olmoe2Config(OlmoeConfig):
         shared_mlp_intermediate_size (`int`, *optional*, defaults to 4096):
             Intermediate size of the shared MLP in MoE layers.
         mlp_only_layers (`list[int]`, *optional*, defaults to `[0]`):
-            Indicate which layers use Olmoe2MLP rather than Olmoe2HybridMoeBlock
+            Indicate the layers in which to not use Olmoe2SparseMoeBlock
             The list contains layer index, from 0 to num_layers-1 if we have num_layers layers
         sliding_window (`int`, *optional*, defaults to 4097):
             Size of the sliding window for sliding window attention.
@@ -301,31 +301,23 @@ class Olmoe2SparseMoeBlock(OlmoeSparseMoeBlock):
         return final_hidden_states, router_logits
 
 
-# A hybrid MoE block containing both a sparse MoE block and an MLP.
-class Olmoe2HybridMoeBlock(Olmoe2MLP):
-    def __init__(self, config: Olmoe2Config):
-        super().__init__(config, intermediate_size=config.shared_mlp_intermediate_size)
-        self.block_sparse_moe = Olmoe2SparseMoeBlock(config)
-
-    def forward(self, hidden_states: torch.Tensor):
-        moe_hidden_states, router_logits = self.block_sparse_moe(hidden_states)
-        hidden_states = moe_hidden_states + super().forward(hidden_states)
-        return hidden_states, router_logits
+class Olmoe2DenseDecoderLayer(Olmo3DecoderLayer):
+    pass
 
 
 # The OLMoE 2 decoder layer is identical to the OLMo 3 decoder layer, except:
 # - A hybrid MoE MLP is used instead of a regular MLP for most layers.
-class Olmoe2DecoderLayer(Olmo3DecoderLayer):
+class Olmoe2DecoderLayer(Olmoe2DenseDecoderLayer):
     def __init__(self, config: Olmoe2Config, layer_idx: int):
         super().__init__(config, layer_idx=layer_idx)
         self.config = config
 
         if layer_idx in config.mlp_only_layers:
-            self.mlp = Olmoe2MLP(config)
-            self.is_mlp_only_layer = True
+            self.mlp = Olmoe2MLP(config, intermediate_size=config.intermediate_size)
+            self.block_sparse_moe = None
         else:
-            self.mlp = Olmoe2HybridMoeBlock(config)
-            self.is_mlp_only_layer = False
+            self.mlp = Olmoe2MLP(config, intermediate_size=config.shared_mlp_intermediate_size)
+            self.block_sparse_moe = Olmoe2SparseMoeBlock(config)
 
     def forward(
         self,
@@ -338,8 +330,16 @@ class Olmoe2DecoderLayer(Olmo3DecoderLayer):
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
-        residual = hidden_states
-        hidden_states, _ = self.self_attn(
+        moe_hidden_states = None
+        router_logits = None
+        if self.block_sparse_moe:
+            moe_hidden_states, router_logits = self.block_sparse_moe(hidden_states)
+
+            output_router_logits = kwargs.get("output_router_logits", self.config.output_router_logits)
+            if not output_router_logits:
+                router_logits = None
+
+        mlp_hidden_states = super().forward(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -349,23 +349,9 @@ class Olmoe2DecoderLayer(Olmo3DecoderLayer):
             position_embeddings=position_embeddings,
             **kwargs,
         )
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = residual + hidden_states
+        assert isinstance(mlp_hidden_states, torch.Tensor)
 
-        # Fully Connected
-        residual = hidden_states
-        if self.is_mlp_only_layer:
-            hidden_states = self.mlp(hidden_states)
-            router_logits = None
-        else:
-            hidden_states, router_logits = self.mlp(hidden_states)
-        hidden_states = self.post_feedforward_layernorm(hidden_states)
-        hidden_states = residual + hidden_states
-
-        output_router_logits = kwargs.get("output_router_logits", self.config.output_router_logits)
-        if not output_router_logits:
-            router_logits = None
-
+        hidden_states = mlp_hidden_states + moe_hidden_states if moe_hidden_states else mlp_hidden_states
         return hidden_states, router_logits
 
 

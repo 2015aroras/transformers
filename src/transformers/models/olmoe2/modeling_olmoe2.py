@@ -262,19 +262,7 @@ class Olmoe2SparseMoeBlock(nn.Module):
         return final_hidden_states, router_logits
 
 
-# A hybrid MoE block containing both a sparse MoE block and an MLP.
-class Olmoe2HybridMoeBlock(Olmoe2MLP):
-    def __init__(self, config: Olmoe2Config):
-        super().__init__(config, intermediate_size=config.shared_mlp_intermediate_size)
-        self.block_sparse_moe = Olmoe2SparseMoeBlock(config)
-
-    def forward(self, hidden_states: torch.Tensor):
-        moe_hidden_states, router_logits = self.block_sparse_moe(hidden_states)
-        hidden_states = moe_hidden_states + super().forward(hidden_states)
-        return hidden_states, router_logits
-
-
-class Olmoe2DecoderLayer(GradientCheckpointingLayer):
+class Olmoe2DenseDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: Olmoe2Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -283,14 +271,6 @@ class Olmoe2DecoderLayer(GradientCheckpointingLayer):
         self.mlp = Olmoe2MLP(config)
         self.post_attention_layernorm = Olmoe2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_feedforward_layernorm = Olmoe2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.config = config
-
-        if layer_idx in config.mlp_only_layers:
-            self.mlp = Olmoe2MLP(config)
-            self.is_mlp_only_layer = True
-        else:
-            self.mlp = Olmoe2HybridMoeBlock(config)
-            self.is_mlp_only_layer = False
 
     def forward(
         self,
@@ -302,7 +282,7 @@ class Olmoe2DecoderLayer(GradientCheckpointingLayer):
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
+    ) -> tuple[torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
@@ -319,18 +299,59 @@ class Olmoe2DecoderLayer(GradientCheckpointingLayer):
 
         # Fully Connected
         residual = hidden_states
-        if self.is_mlp_only_layer:
-            hidden_states = self.mlp(hidden_states)
-            router_logits = None
-        else:
-            hidden_states, router_logits = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states)
         hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = residual + hidden_states
+        return hidden_states
 
-        output_router_logits = kwargs.get("output_router_logits", self.config.output_router_logits)
-        if not output_router_logits:
-            router_logits = None
 
+# The OLMoE 2 decoder layer is identical to the OLMo 3 decoder layer, except:
+# - A hybrid MoE MLP is used instead of a regular MLP for most layers.
+class Olmoe2DecoderLayer(Olmoe2DenseDecoderLayer):
+    def __init__(self, config: Olmoe2Config, layer_idx: int):
+        super().__init__(config, layer_idx=layer_idx)
+        self.config = config
+
+        if layer_idx in config.mlp_only_layers:
+            self.mlp = Olmoe2MLP(config, intermediate_size=config.intermediate_size)
+            self.block_sparse_moe = None
+        else:
+            self.mlp = Olmoe2MLP(config, intermediate_size=config.shared_mlp_intermediate_size)
+            self.block_sparse_moe = Olmoe2SparseMoeBlock(config)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Cache] = None,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
+        moe_hidden_states = None
+        router_logits = None
+        if self.block_sparse_moe:
+            moe_hidden_states, router_logits = self.block_sparse_moe(hidden_states)
+
+            output_router_logits = kwargs.get("output_router_logits", self.config.output_router_logits)
+            if not output_router_logits:
+                router_logits = None
+
+        mlp_hidden_states = super().forward(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            **kwargs,
+        )
+        assert isinstance(mlp_hidden_states, torch.Tensor)
+
+        hidden_states = mlp_hidden_states + moe_hidden_states if moe_hidden_states else mlp_hidden_states
         return hidden_states, router_logits
 
 

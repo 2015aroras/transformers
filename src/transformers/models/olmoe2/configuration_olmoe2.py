@@ -87,7 +87,7 @@ class Olmoe2Config(PretrainedConfig):
         shared_mlp_intermediate_size (`int`, *optional*, defaults to 4096):
             Intermediate size of the shared MLP in MoE layers.
         mlp_only_layers (`list[int]`, *optional*, defaults to `[0]`):
-            Indicate which layers use Olmoe2MLP rather than Olmoe2HybridMoeBlock
+            Indicate the layers in which to not use Olmoe2SparseMoeBlock
             The list contains layer index, from 0 to num_layers-1 if we have num_layers layers
         sliding_window (`int`, *optional*, defaults to 4097):
             Size of the sliding window for sliding window attention.
