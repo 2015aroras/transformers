@@ -351,7 +351,7 @@ class Olmoe2DecoderLayer(Olmoe2DenseDecoderLayer):
         )
         assert isinstance(mlp_hidden_states, torch.Tensor)
 
-        hidden_states = mlp_hidden_states + moe_hidden_states if moe_hidden_states else mlp_hidden_states
+        hidden_states = mlp_hidden_states + moe_hidden_states if moe_hidden_states is not None else mlp_hidden_states
         return hidden_states, router_logits
 
 
