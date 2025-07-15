@@ -315,9 +315,11 @@ class Olmoe2DecoderLayer(Olmoe2DenseDecoderLayer):
         if layer_idx in config.mlp_only_layers:
             self.mlp = Olmoe2MLP(config, intermediate_size=config.intermediate_size)
             self.block_sparse_moe = None
+            self.post_moe_norm = None
         else:
             self.mlp = Olmoe2MLP(config, intermediate_size=config.shared_mlp_intermediate_size)
             self.block_sparse_moe = Olmoe2SparseMoeBlock(config)
+            self.post_moe_norm = Olmoe2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -332,8 +334,11 @@ class Olmoe2DecoderLayer(Olmoe2DenseDecoderLayer):
     ) -> tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
         moe_hidden_states = None
         router_logits = None
-        if self.block_sparse_moe:
-            moe_hidden_states, router_logits = self.block_sparse_moe(hidden_states)
+        if self.block_sparse_moe is not None:
+            assert self.post_moe_norm is not None
+            moe_hidden_states = hidden_states
+            moe_hidden_states, router_logits = self.block_sparse_moe(moe_hidden_states)
+            moe_hidden_states = self.post_moe_norm(moe_hidden_states)
 
             output_router_logits = kwargs.get("output_router_logits", self.config.output_router_logits)
             if not output_router_logits:
