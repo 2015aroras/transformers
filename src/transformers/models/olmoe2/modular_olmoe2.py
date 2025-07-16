@@ -112,6 +112,8 @@ class Olmoe2Config(OlmoeConfig):
         mlp_only_layers (`list[int]`, *optional*, defaults to `[0]`):
             Indicate the layers in which to not use Olmoe2SparseMoeBlock
             The list contains layer index, from 0 to num_layers-1 if we have num_layers layers
+        router_normalization_func (`string`, *optional*, defaults to `"sigmoid"`):
+            Function used to normalize the MoE router's logits. Must be one of "sigmoid" or "softmax".
         sliding_window (`int`, *optional*, defaults to 4097):
             Size of the sliding window for sliding window attention.
         layer_types (`list`, *optional*):
@@ -180,6 +182,7 @@ class Olmoe2Config(OlmoeConfig):
         moe_intermediate_size=1024,
         shared_mlp_intermediate_size=4096,
         mlp_only_layers=None,
+        router_normalization_func="sigmoid",
         sliding_window=4097,
         layer_types=None,
         **kwargs,
@@ -215,6 +218,7 @@ class Olmoe2Config(OlmoeConfig):
         self.moe_intermediate_size = moe_intermediate_size
         self.shared_mlp_intermediate_size = shared_mlp_intermediate_size
         self.mlp_only_layers = [0] if mlp_only_layers is None else mlp_only_layers
+        self.router_normalization_func = router_normalization_func
 
         self.sliding_window = sliding_window
         self.layer_types = layer_types
@@ -259,6 +263,7 @@ class Olmoe2MLP(nn.Module):
 class Olmoe2SparseMoeBlock(OlmoeSparseMoeBlock):
     def __init__(self, config: Olmoe2Config):
         super().__init__(config)
+        self.config = config
         self.experts = nn.ModuleList(
             [Olmoe2MLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
         )
@@ -268,13 +273,22 @@ class Olmoe2SparseMoeBlock(OlmoeSparseMoeBlock):
         hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
         router_logits = self.gate(hidden_states)
+        assert isinstance(router_logits, torch.Tensor)
 
-        routing_weights = F.sigmoid(router_logits.float())
+        if self.config.router_normalization_func == "sigmoid":
+            routing_weights = F.sigmoid(router_logits.float())
+            # to avoid NaNs in the load balancing loss, OLMoE added a small epsilon when using sigmoid
+            routing_weights += 1e-7
+        elif self.config.router_normalization_func == "softmax":
+            routing_weights = router_logits.float().softmax(dim=-1)
+        else:
+            raise NotImplementedError(
+                f"Router logit normalization not implemented for function {self.config.router_normalization_func}"
+            )
+
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
         if self.norm_topk_prob:
             routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-        # # we cast back to the input dtype
-        # routing_weights = routing_weights.to(hidden_states.dtype)
 
         final_hidden_states = torch.zeros_like(hidden_states)
 

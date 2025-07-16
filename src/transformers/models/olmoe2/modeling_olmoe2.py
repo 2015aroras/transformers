@@ -223,19 +223,29 @@ class Olmoe2SparseMoeBlock(nn.Module):
         self.experts = nn.ModuleList(
             [Olmoe2MLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.num_experts)]
         )
+        self.config = config
 
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
         router_logits = self.gate(hidden_states)
+        assert isinstance(router_logits, torch.Tensor)
 
-        routing_weights = F.sigmoid(router_logits.float())
+        if self.config.router_normalization_func == "sigmoid":
+            routing_weights = F.sigmoid(router_logits.float())
+            # to avoid NaNs in the load balancing loss, OLMoE added a small epsilon when using sigmoid
+            routing_weights += 1e-7
+        elif self.config.router_normalization_func == "softmax":
+            routing_weights = router_logits.float().softmax(dim=-1)
+        else:
+            raise NotImplementedError(
+                f"Router logit normalization not implemented for function {self.config.router_normalization_func}"
+            )
+
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
         if self.norm_topk_prob:
             routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-        # # we cast back to the input dtype
-        # routing_weights = routing_weights.to(hidden_states.dtype)
 
         final_hidden_states = torch.zeros_like(hidden_states)
 
