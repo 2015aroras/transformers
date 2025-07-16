@@ -234,8 +234,8 @@ class Olmoe2SparseMoeBlock(nn.Module):
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
         if self.norm_topk_prob:
             routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-        # we cast back to the input dtype
-        routing_weights = routing_weights.to(hidden_states.dtype)
+        # # we cast back to the input dtype
+        # routing_weights = routing_weights.to(hidden_states.dtype)
 
         final_hidden_states = torch.zeros_like(hidden_states)
 
