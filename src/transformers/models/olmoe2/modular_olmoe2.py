@@ -16,13 +16,13 @@ from ..olmo3.modeling_olmo3 import (
     Olmo3Attention,
     Olmo3DecoderLayer,
     Olmo3RMSNorm,
+    Olmo3RotaryEmbedding,
 )
 from ..olmoe.configuration_olmoe import OlmoeConfig
 from ..olmoe.modeling_olmoe import (
     OlmoeForCausalLM,
     OlmoeModel,
     OlmoePreTrainedModel,
-    OlmoeRotaryEmbedding,
     OlmoeSparseMoeBlock,
     load_balancing_loss_func,
 )
@@ -360,7 +360,7 @@ class Olmoe2DecoderLayer(Olmoe2DenseDecoderLayer):
         return hidden_states, router_logits
 
 
-class Olmoe2RotaryEmbedding(OlmoeRotaryEmbedding):
+class Olmoe2RotaryEmbedding(Olmo3RotaryEmbedding):
     pass
 
 
