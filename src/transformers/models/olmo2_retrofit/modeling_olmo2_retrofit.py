@@ -143,8 +143,8 @@ class Olmo2RetrofitAttention(nn.Module):
         self.o_proj = nn.Linear(
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
-        self.q_norm = Olmo2RetrofitRMSNorm(self.head_dim, config.rms_norm_eps)
-        self.k_norm = Olmo2RetrofitRMSNorm(self.head_dim, config.rms_norm_eps)
+        self.q_norm = Olmo2RetrofitRMSNorm(config.num_attention_heads * self.head_dim, config.rms_norm_eps)
+        self.k_norm = Olmo2RetrofitRMSNorm(config.num_key_value_heads * self.head_dim, config.rms_norm_eps)
         assert config.layer_types is not None
         self.attention_type = config.layer_types[layer_idx]
         self.sliding_window = config.sliding_window if self.attention_type == "sliding_attention" else None
@@ -161,8 +161,8 @@ class Olmo2RetrofitAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        query_states = self.q_norm(self.q_proj(hidden_states)).view(hidden_shape).transpose(1, 2)
+        key_states = self.k_norm(self.k_proj(hidden_states)).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings

@@ -1,24 +1,21 @@
 from typing import Callable, Optional
 
 import torch
-import torch.nn as nn
 
-from ...cache_utils import Cache, DynamicCache
+from ...cache_utils import Cache
 from ...configuration_utils import layer_type_validation
-from ...masking_utils import create_causal_mask, create_sliding_window_causal_mask
-from ...modeling_outputs import BaseModelOutputWithPast
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs
 from ..olmo2.configuration_olmo2 import Olmo2Config
-from ..olmo2.modeling_olmo2 import (
-    Olmo2Attention,
-    Olmo2DecoderLayer,
-    Olmo2ForCausalLM,
-    Olmo2Model,
-    Olmo2PreTrainedModel,
-    Olmo2RMSNorm,
-    Olmo2RotaryEmbedding,
+from ..olmo3.modeling_olmo3 import (
+    Olmo3Attention,
+    Olmo3DecoderLayer,
+    Olmo3ForCausalLM,
+    Olmo3Model,
+    Olmo3PreTrainedModel,
+    Olmo3RMSNorm,
+    Olmo3RotaryEmbedding,
     apply_rotary_pos_emb,
     eager_attention_forward,
 )
@@ -179,21 +176,17 @@ class Olmo2RetrofitConfig(Olmo2Config):
         layer_type_validation(self.layer_types)
 
 
-class Olmo2RetrofitRMSNorm(Olmo2RMSNorm):
+class Olmo2RetrofitRMSNorm(Olmo3RMSNorm):
     pass
 
 
-# Olmo2Retrofit attention is identical to OLMo 2 attention except:
-# - Norm is applied headwise to attention queries and keys.
-# - Sliding window attention is used for 3 out of 4 layers.
-class Olmo2RetrofitAttention(Olmo2Attention):
+# Olmo2Retrofit attention is identical to OLMo 3 attention except:
+# - Norm is NOT applied headwise to attention queries and keys.
+class Olmo2RetrofitAttention(Olmo3Attention):
     def __init__(self, config: Olmo2RetrofitConfig, layer_idx: int):
         super().__init__(config, layer_idx=layer_idx)
-        assert config.layer_types is not None
-        self.attention_type = config.layer_types[layer_idx]
-        self.sliding_window = config.sliding_window if self.attention_type == "sliding_attention" else None
-        self.q_norm = Olmo2RetrofitRMSNorm(self.head_dim, config.rms_norm_eps)
-        self.k_norm = Olmo2RetrofitRMSNorm(self.head_dim, config.rms_norm_eps)
+        self.q_norm = Olmo2RetrofitRMSNorm(config.num_attention_heads * self.head_dim, config.rms_norm_eps)
+        self.k_norm = Olmo2RetrofitRMSNorm(config.num_key_value_heads * self.head_dim, config.rms_norm_eps)
 
     def forward(
         self,
@@ -207,8 +200,8 @@ class Olmo2RetrofitAttention(Olmo2Attention):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        query_states = self.q_norm(self.q_proj(hidden_states)).view(hidden_shape).transpose(1, 2)
+        key_states = self.k_norm(self.k_proj(hidden_states)).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
@@ -240,97 +233,23 @@ class Olmo2RetrofitAttention(Olmo2Attention):
         return attn_output, attn_weights
 
 
-class Olmo2RetrofitDecoderLayer(Olmo2DecoderLayer):
+class Olmo2RetrofitDecoderLayer(Olmo3DecoderLayer):
     pass
 
 
-class Olmo2RetrofitRotaryEmbedding(Olmo2RotaryEmbedding):
+class Olmo2RetrofitRotaryEmbedding(Olmo3RotaryEmbedding):
     pass
 
 
-class Olmo2RetrofitPreTrainedModel(Olmo2PreTrainedModel):
+class Olmo2RetrofitPreTrainedModel(Olmo3PreTrainedModel):
     pass
 
 
-# The OLMo 3 model is identical to the OLMo 2 model, except:
-# - Sliding window attention is used for 3 out of 4 layers.
-class Olmo2RetrofitModel(Olmo2Model):
-    def __init__(self, config: Olmo2RetrofitConfig):
-        super().__init__(config)
-        self.norm = Olmo2RetrofitRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.layers = nn.ModuleList(
-            [Olmo2RetrofitDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
-        )
-
-    def forward(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutputWithPast:
-        if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-
-        if inputs_embeds is None:
-            inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
-
-        if use_cache and past_key_values is None:
-            past_key_values = DynamicCache()
-
-        if cache_position is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-            cache_position: torch.Tensor = torch.arange(
-                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
-            )
-
-        if position_ids is None:
-            position_ids = cache_position.unsqueeze(0)
-
-        # It may already have been prepared by e.g. `generate`
-        if not isinstance(causal_mask_mapping := attention_mask, dict):
-            # Prepare mask arguments
-            mask_kwargs = {
-                "config": self.config,
-                "input_embeds": inputs_embeds,
-                "attention_mask": attention_mask,
-                "cache_position": cache_position,
-                "past_key_values": past_key_values,
-                "position_ids": position_ids,
-            }
-            # Create the masks
-            causal_mask_mapping = {
-                "full_attention": create_causal_mask(**mask_kwargs),
-                "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
-            }
-
-        hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
-
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
-            hidden_states = decoder_layer(
-                hidden_states,
-                attention_mask=causal_mask_mapping[decoder_layer.self_attn.attention_type],
-                position_ids=position_ids,
-                past_key_value=past_key_values,
-                cache_position=cache_position,
-                position_embeddings=position_embeddings,
-                **kwargs,
-            )
-
-        hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(
-            last_hidden_state=hidden_states,
-            past_key_values=past_key_values,
-        )
+class Olmo2RetrofitModel(Olmo3Model):
+    pass
 
 
-# The heads now only need to redefine the model inside to the correct `RobertaModel`
-class Olmo2RetrofitForCausalLM(Olmo2ForCausalLM):
+class Olmo2RetrofitForCausalLM(Olmo3ForCausalLM):
     pass
 
 
