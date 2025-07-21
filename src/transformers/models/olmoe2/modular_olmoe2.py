@@ -384,7 +384,16 @@ class Olmoe2PreTrainedModel(OlmoePreTrainedModel):
 
 # The OLMoE 2 model is identical to the OLMoE model, except:
 # - Sliding window attention is used for 3 out of 4 layers.
+# - RoPE scaling is not applied to sliding window attention layers.
 class Olmoe2Model(OlmoeModel):
+    def __init__(self, config: Olmoe2Config):
+        super().__init__(config)
+        self.rotary_embs = {
+            "sliding_attention": Olmoe2RotaryEmbedding(config=config, rope_type="default"),
+            "full_attention": Olmoe2RotaryEmbedding(config=config),
+        }
+        del self.rotary_emb
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -432,7 +441,9 @@ class Olmoe2Model(OlmoeModel):
             }
 
         hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings_mapping = {
+            layer_type: rotary_emb(hidden_states, position_ids) for layer_type, rotary_emb in self.rotary_embs.items()
+        }
 
         output_router_logits = kwargs.get("output_router_logits", self.config.output_router_logits)
         all_router_logits: Optional[tuple[torch.FloatTensor, ...]] = () if output_router_logits else None
@@ -444,7 +455,7 @@ class Olmoe2Model(OlmoeModel):
                 position_ids=position_ids,
                 past_key_value=past_key_values,
                 cache_position=cache_position,
-                position_embeddings=position_embeddings,
+                position_embeddings=position_embeddings_mapping[decoder_layer.self_attn.attention_type],
                 **kwargs,
             )
 

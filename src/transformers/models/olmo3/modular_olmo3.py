@@ -7,7 +7,7 @@ from ...cache_utils import Cache, DynamicCache
 from ...configuration_utils import layer_type_validation
 from ...masking_utils import create_causal_mask, create_sliding_window_causal_mask
 from ...modeling_outputs import BaseModelOutputWithPast
-from ...modeling_rope_utils import rope_config_validation
+from ...modeling_rope_utils import ROPE_INIT_FUNCTIONS, rope_config_validation
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS
 from ...processing_utils import Unpack
 from ...utils import TransformersKwargs
@@ -280,8 +280,29 @@ class Olmo3DecoderLayer(Olmo2DecoderLayer):
     pass
 
 
+# OLMo 3 RoPE is identical to OLMo 2 RoPE, except:
+# - RoPE scaling is not applied to sliding window attention layers.
 class Olmo3RotaryEmbedding(Olmo2RotaryEmbedding):
-    pass
+    def __init__(self, config: Olmo3Config, device=None, rope_type: Optional[str] = None):
+        nn.Module.__init__(self)
+        if rope_type is not None:
+            self.rope_type = rope_type
+        elif hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
+            # BC: "rope_type" was originally "type"
+            self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
+        else:
+            self.rope_type = "default"
+        assert self.rope_type is not None
+
+        self.max_seq_len_cached = config.max_position_embeddings
+        self.original_max_seq_len = config.max_position_embeddings
+
+        self.config = config
+        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.original_inv_freq = self.inv_freq
 
 
 class Olmo3PreTrainedModel(Olmo2PreTrainedModel):
@@ -290,6 +311,7 @@ class Olmo3PreTrainedModel(Olmo2PreTrainedModel):
 
 # The OLMo 3 model is identical to the OLMo 2 model, except:
 # - Sliding window attention is used for 3 out of 4 layers.
+# - RoPE scaling is not applied to sliding window attention layers.
 class Olmo3Model(Olmo2Model):
     def __init__(self, config: Olmo3Config):
         super().__init__(config)
@@ -297,6 +319,11 @@ class Olmo3Model(Olmo2Model):
         self.layers = nn.ModuleList(
             [Olmo3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
+        self.rotary_embs = {
+            "sliding_attention": Olmo3RotaryEmbedding(config=config, rope_type="default"),
+            "full_attention": Olmo3RotaryEmbedding(config=config),
+        }
+        del self.rotary_emb
 
     def forward(
         self,
@@ -345,7 +372,9 @@ class Olmo3Model(Olmo2Model):
             }
 
         hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings_mapping = {
+            layer_type: rotary_emb(hidden_states, position_ids) for layer_type, rotary_emb in self.rotary_embs.items()
+        }
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
@@ -354,7 +383,7 @@ class Olmo3Model(Olmo2Model):
                 position_ids=position_ids,
                 past_key_value=past_key_values,
                 cache_position=cache_position,
-                position_embeddings=position_embeddings,
+                position_embeddings=position_embeddings_mapping[decoder_layer.self_attn.attention_type],
                 **kwargs,
             )
 
