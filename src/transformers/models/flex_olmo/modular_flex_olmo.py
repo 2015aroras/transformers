@@ -18,14 +18,13 @@ from typing import Optional
 import torch
 
 from ...cache_utils import Cache
+from ..mixtral.modeling_mixtral import MixtralModel
 from ..olmo2.modeling_olmo2 import Olmo2Attention, Olmo2RMSNorm, Olmo2RotaryEmbedding
 from ..olmoe.configuration_olmoe import OlmoeConfig
 from ..olmoe.modeling_olmoe import (
     OlmoeDecoderLayer,
     OlmoeForCausalLM,
     OlmoeMLP,
-    OlmoeModel,
-    OlmoePreTrainedModel,
     OlmoeSparseMoeBlock,
 )
 
@@ -235,23 +234,18 @@ class FlexOlmoDecoderLayer(OlmoeDecoderLayer):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
-        output_attentions: Optional[bool] = False,
-        output_router_logits: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
-    ) -> tuple[torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]]:
+    ) -> torch.FloatTensor:
         residual = hidden_states
 
         # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+        hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
             **kwargs,
@@ -261,29 +255,15 @@ class FlexOlmoDecoderLayer(OlmoeDecoderLayer):
 
         # Fully Connected
         residual = hidden_states
-        hidden_states, router_logits = self.mlp(hidden_states)
+        hidden_states, _ = self.mlp(hidden_states)
         hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = residual + hidden_states
-
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-
-        if output_router_logits:
-            outputs += (router_logits,)
-
-        return outputs
+        return hidden_states
 
 
-class FlexOlmoPreTrainedModel(OlmoePreTrainedModel):
-    pass
-
-
-class FlexOlmoModel(OlmoeModel):
+# FlexOlmo uses Mixtral model instead of OlmoE model since it is more up-to-date with the rest
+# of the transformers library. For example, it uses the newer mechanisms of recording submodule outputs.
+class FlexOlmoModel(MixtralModel):
     pass
 
 

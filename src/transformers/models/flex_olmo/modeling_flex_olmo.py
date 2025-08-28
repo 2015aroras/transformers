@@ -22,27 +22,25 @@
 from typing import Callable, Optional, Union
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
-from transformers.utils.generic import TransformersKwargs
+from transformers.utils.generic import check_model_inputs
 
 from ...activations import ACT2FN
-from ...cache_utils import Cache, DynamicCache, StaticCache
+from ...cache_utils import Cache, DynamicCache
 from ...generation import GenerationMixin
 from ...integrations import use_kernel_forward_from_hub
-from ...modeling_attn_mask_utils import AttentionMaskConverter
+from ...masking_utils import create_causal_mask, create_sliding_window_causal_mask
 from ...modeling_layers import GradientCheckpointingLayer
 from ...modeling_outputs import MoeCausalLMOutputWithPast, MoeModelOutputWithPast
 from ...modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
-from ...utils import auto_docstring, logging
+from ...utils import TransformersKwargs, auto_docstring
 from ...utils.deprecation import deprecate_kwarg
+from ...utils.generic import OutputRecorder
 from .configuration_flex_olmo import FlexOlmoConfig
-
-
-logger = logging.get_logger(__name__)
 
 
 @use_kernel_forward_from_hub("RMSNorm")
@@ -332,13 +330,10 @@ class FlexOlmoDecoderLayer(GradientCheckpointingLayer):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
-        output_attentions: Optional[bool] = False,
-        output_router_logits: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
-    ) -> tuple[torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]]:
+    ) -> torch.FloatTensor:
         """
         Args:
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
@@ -367,13 +362,11 @@ class FlexOlmoDecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
 
         # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+        hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
             **kwargs,
@@ -383,22 +376,10 @@ class FlexOlmoDecoderLayer(GradientCheckpointingLayer):
 
         # Fully Connected
         residual = hidden_states
-        hidden_states, router_logits = self.mlp(hidden_states)
+        hidden_states, _ = self.mlp(hidden_states)
         hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = residual + hidden_states
-
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-
-        if output_router_logits:
-            outputs += (router_logits,)
-
-        return outputs
+        return hidden_states
 
 
 @auto_docstring
@@ -410,21 +391,14 @@ class FlexOlmoPreTrainedModel(PreTrainedModel):
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
     _supports_sdpa = True
-
+    _supports_flex_attn = True
     _can_compile_fullgraph = False  # MoE models don't work with torch.compile (`torch.where(condition)` not supported)
-
-    def _init_weights(self, module):
-        std = self.config.initializer_range
-        if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=std)
-            if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, FlexOlmoRMSNorm):
-            module.weight.data.fill_(1.0)
-        elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=std)
-            if module.padding_idx is not None:
-                module.weight.data[module.padding_idx].zero_()
+    _supports_attention_backend = True
+    _can_record_outputs = {
+        "router_logits": OutputRecorder(FlexOlmoSparseMoeBlock, index=1),
+        "hidden_states": FlexOlmoDecoderLayer,
+        "attentions": FlexOlmoAttention,
+    }
 
 
 @auto_docstring
@@ -445,49 +419,27 @@ class FlexOlmoModel(FlexOlmoPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    @check_model_inputs
     @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Union[Cache, list[torch.FloatTensor]]] = None,
+        past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        output_router_logits: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-    ) -> Union[tuple, MoeModelOutputWithPast]:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_router_logits = (
-            output_router_logits if output_router_logits is not None else self.config.output_router_logits
-        )
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
-        if self.gradient_checkpointing and self.training and use_cache:
-            logger.warning_once(
-                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
-            )
-            use_cache = False
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache(config=self.config)
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
-
-        # TODO (joao): remove this exception in v4.56 -- it exists for users that try to pass a legacy cache
-        if not isinstance(past_key_values, (type(None), Cache)):
-            raise ValueError("The `past_key_values` should be either a `Cache` object or `None`.")
-
-        if use_cache and past_key_values is None:
-            past_key_values = DynamicCache()
 
         if cache_position is None:
             past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
@@ -497,183 +449,39 @@ class FlexOlmoModel(FlexOlmoPreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = self._update_causal_mask(
-            attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
+        mask_function = create_causal_mask if self.config.sliding_window is None else create_sliding_window_causal_mask
+        causal_mask = mask_function(
+            config=self.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=position_ids,
         )
 
-        # embed positions
         hidden_states = inputs_embeds
 
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        # decoder layers
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attns = () if output_attentions else None
-        all_router_logits = () if output_router_logits else None
-
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-
-            layer_outputs = decoder_layer(
+            hidden_states = decoder_layer(
                 hidden_states,
+                position_embeddings=position_embeddings,
                 attention_mask=causal_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
-                output_attentions=output_attentions,
-                output_router_logits=output_router_logits,
                 use_cache=use_cache,
                 cache_position=cache_position,
-                position_embeddings=position_embeddings,
+                **kwargs,
             )
-
-            hidden_states = layer_outputs[0]
-
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
-
-            if output_router_logits and layer_outputs[-1] is not None:
-                all_router_logits += (layer_outputs[-1],)
 
         hidden_states = self.norm(hidden_states)
 
-        # add hidden states from the last decoder layer
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
-
-        if not return_dict:
-            return tuple(
-                v for v in [hidden_states, past_key_values, all_hidden_states, all_self_attns] if v is not None
-            )
-        return MoeModelOutputWithPast(
+        return MoeModelOutputWithPast(  # only diff with Mistral is the output type, we need MoE
             last_hidden_state=hidden_states,
             past_key_values=past_key_values,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attns,
-            router_logits=all_router_logits,
         )
-
-    def _update_causal_mask(
-        self,
-        attention_mask: torch.Tensor,
-        input_tensor: torch.Tensor,
-        cache_position: torch.Tensor,
-        past_key_values: Cache,
-        output_attentions: bool,
-    ):
-        if self.config._attn_implementation == "flash_attention_2":
-            if attention_mask is not None and 0.0 in attention_mask:
-                return attention_mask
-            return None
-
-        # For SDPA, when possible, we will rely on its `is_causal` argument instead of its `attn_mask` argument, in
-        # order to dispatch on Flash Attention 2. This feature is not compatible with static cache, as SDPA will fail
-        # to infer the attention mask.
-        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-        using_static_cache = isinstance(past_key_values, StaticCache)
-
-        # When output attentions is True, sdpa implementation's forward method calls the eager implementation's forward
-        if self.config._attn_implementation == "sdpa" and not using_static_cache and not output_attentions:
-            if AttentionMaskConverter._ignore_causal_mask_sdpa(
-                attention_mask,
-                inputs_embeds=input_tensor,
-                past_key_values_length=past_seen_tokens,
-                is_training=self.training,
-            ):
-                return None
-
-        dtype, device = input_tensor.dtype, input_tensor.device
-        sequence_length = input_tensor.shape[1]
-        if using_static_cache:
-            target_length = past_key_values.get_max_cache_shape()
-        else:
-            target_length = (
-                attention_mask.shape[-1]
-                if isinstance(attention_mask, torch.Tensor)
-                else past_seen_tokens + sequence_length + 1
-            )
-
-        # In case the provided `attention` mask is 2D, we generate a causal mask here (4D).
-        causal_mask = self._prepare_4d_causal_attention_mask_with_cache_position(
-            attention_mask,
-            sequence_length=sequence_length,
-            target_length=target_length,
-            dtype=dtype,
-            device=device,
-            cache_position=cache_position,
-            batch_size=input_tensor.shape[0],
-        )
-
-        if (
-            self.config._attn_implementation == "sdpa"
-            and attention_mask is not None
-            and attention_mask.device.type in ["cuda", "xpu", "npu"]
-            and not output_attentions
-        ):
-            # Attend to all tokens in fully masked rows in the causal_mask, for example the relevant first rows when
-            # using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path.
-            # Details: https://github.com/pytorch/pytorch/issues/110213
-            min_dtype = torch.finfo(dtype).min
-            causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
-
-        return causal_mask
-
-    @staticmethod
-    def _prepare_4d_causal_attention_mask_with_cache_position(
-        attention_mask: torch.Tensor,
-        sequence_length: int,
-        target_length: int,
-        dtype: torch.dtype,
-        device: torch.device,
-        cache_position: torch.Tensor,
-        batch_size: int,
-        **kwargs,
-    ):
-        """
-        Creates a causal 4D mask of shape `(batch_size, 1, query_length, key_value_length)` from a 2D mask of shape
-        `(batch_size, key_value_length)`, or if the input `attention_mask` is already 4D, do nothing.
-
-        Args:
-            attention_mask (`torch.Tensor`):
-                A 2D attention mask of shape `(batch_size, key_value_length)` or a 4D attention mask of shape
-                `(batch_size, 1, query_length, key_value_length)`.
-            sequence_length (`int`):
-                The sequence length being processed.
-            target_length (`int`):
-                The target length: when generating with static cache, the mask should be as long as the static cache,
-                to account for the 0 padding, the part of the cache that is not filled yet.
-            dtype (`torch.dtype`):
-                The dtype to use for the 4D attention mask.
-            device (`torch.device`):
-                The device to place the 4D attention mask on.
-            cache_position (`torch.Tensor`):
-                Indices depicting the position of the input sequence tokens in the sequence.
-            batch_size (`torch.Tensor`):
-                Batch size.
-        """
-        if attention_mask is not None and attention_mask.dim() == 4:
-            # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
-            causal_mask = attention_mask
-        else:
-            min_dtype = torch.finfo(dtype).min
-            causal_mask = torch.full(
-                (sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device
-            )
-            if sequence_length != 1:
-                causal_mask = torch.triu(causal_mask, diagonal=1)
-            causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
-            causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
-            if attention_mask is not None:
-                causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
-                mask_length = attention_mask.shape[-1]
-                padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
-                padding_mask = padding_mask == 0
-                causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-                    padding_mask, min_dtype
-                )
-
-        return causal_mask
 
 
 def load_balancing_loss_func(
