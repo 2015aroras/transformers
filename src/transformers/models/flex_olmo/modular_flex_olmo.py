@@ -190,6 +190,8 @@ class FlexOlmoConfig(OlmoeConfig):
             **kwargs,
         )
 
+        # Set this to None because it is needed by MixtralModel
+        self.sliding_window = None
         del self.clip_qkv
 
 
