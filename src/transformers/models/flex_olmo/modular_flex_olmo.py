@@ -220,8 +220,18 @@ class FlexOlmoAttention(Olmo2Attention):
     pass
 
 
+# FlexOlmo sparse moe block is identical to OlmoE sparse moe block except:
+# - The router logits are computed in full precision.
 class FlexOlmoSparseMoeBlock(OlmoeSparseMoeBlock):
-    pass
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        router_logits = self.gate.to(dtype=torch.float32)(hidden_states.float())
+        top_k_index, top_k_weights = self.route_tokens_to_experts(hidden_states, router_logits)
+        final_hidden_states = self.experts(hidden_states, top_k_index, top_k_weights).reshape(
+            batch_size, sequence_length, hidden_dim
+        )
+        return final_hidden_states
 
 
 # FlexOlmo decoder layer is identical to OlmoE decoder layer except:

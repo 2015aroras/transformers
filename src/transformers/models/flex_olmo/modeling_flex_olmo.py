@@ -318,7 +318,7 @@ class FlexOlmoSparseMoeBlock(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
-        router_logits = self.gate(hidden_states)
+        router_logits = self.gate.to(dtype=torch.float32)(hidden_states.float())
         top_k_index, top_k_weights = self.route_tokens_to_experts(hidden_states, router_logits)
         final_hidden_states = self.experts(hidden_states, top_k_index, top_k_weights).reshape(
             batch_size, sequence_length, hidden_dim
